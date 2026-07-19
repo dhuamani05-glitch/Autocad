@@ -10,7 +10,7 @@ Option Explicit
 ' (cabezal / valvula), trazar la red de tuberias que los conecta a TODOS
 ' con la MENOR longitud total posible, dibujada con POLILINEAS.
 '
-' �POR QUE ES "LO MAS EFICIENTE POSIBLE"?
+' POR QUE ES "LO MAS EFICIENTE POSIBLE"?
 '   Conectar N puntos con tuberia, sin bucles (un arbol), gastando la
 '   menor cantidad de tuberia, es EXACTAMENTE el problema del ARBOL DE
 '   EXPANSION MINIMA (Minimum Spanning Tree). Este modulo lo resuelve con
@@ -112,13 +112,14 @@ Public Sub TrazadoTuberias()
 
     Dim rotular As Boolean
     rotular = (UCase$(Trim$(InputBox( _
-        "�Rotular cada tramo con su diametro y caudal?  (S/N)", _
+        "Rotular cada tramo con su diametro y caudal?  (S/N)", _
         "Rotulos", "S"))) = "S")
 
     '======================================================================
     ' 4) ARBOL DE EXPANSION MINIMA (PRIM)  -> longitud total minima
     '======================================================================
-    Dim parent() As Long, orden() As Long
+    Dim parent() As Long
+    Dim orden() As Long
     ReDim parent(nP - 1)
     ReDim orden(nP - 1)
     Prim parent, orden
@@ -221,7 +222,8 @@ End Sub
 '   O(n^2): adecuado para cientos/miles de aspersores.
 '==============================================================================
 Private Sub Prim(ByRef parent() As Long, ByRef orden() As Long)
-    Dim inT() As Boolean, best() As Double
+    Dim inT() As Boolean
+    Dim best() As Double
     ReDim inT(nP - 1)
     ReDim best(nP - 1)
 
