@@ -68,16 +68,33 @@ Public Sub TrazadoTuberias()
         "Deje VACIO para trazar TODOS los aspersores.", _
         "Trazado de tuberias", "")))
 
-    ' Deteccion automatica de los bloques de aspersor.
+    ' Deteccion automatica de los bloques de aspersor (por nombre/atributo).
     RecolectarAspersores zonaFiltro
 
-    ' Si la deteccion automatica no encontro nada, ofrecer seleccion manual.
+    ' Si la deteccion automatica no encontro nada, mostrar un DIAGNOSTICO de
+    ' lo que hay en el dibujo y dejar elegir de donde tomar los aspersores.
     If nP = 0 Then
-        MsgBox "No se detectaron bloques de aspersor automaticamente." & vbCrLf & _
-               "A continuacion SELECCIONE en pantalla los aspersores" & vbCrLf & _
-               "(bloques / circulos / puntos) y presione ENTER.", _
-               vbInformation, "Trazado de tuberias"
-        SeleccionManual
+        Dim nBlk As Long, nCir As Long, nPnt As Long
+        ContarEntidades nBlk, nCir, nPnt
+
+        Dim op As String
+        op = Trim$(InputBox( _
+            "No se detectaron aspersores por nombre/atributo." & vbCrLf & _
+            "En el ESPACIO MODELO hay:" & vbCrLf & _
+            "   - Bloques (INSERT):  " & nBlk & vbCrLf & _
+            "   - Circulos:          " & nCir & vbCrLf & _
+            "   - Puntos:            " & nPnt & vbCrLf & vbCrLf & _
+            "De donde tomo los aspersores?" & vbCrLf & _
+            "   1 = TODOS los bloques (recomendado si hay bloques)" & vbCrLf & _
+            "   2 = TODOS los circulos" & vbCrLf & _
+            "   3 = SELECCIONARLOS a mano en pantalla", _
+            "Trazado de tuberias - diagnostico", "1"))
+
+        Select Case op
+            Case "1": ColectarBloques zonaFiltro
+            Case "2": ColectarCirculos
+            Case Else: SeleccionManual
+        End Select
     End If
 
     If nP < 1 Then
@@ -431,15 +448,92 @@ Private Function SeleccionManual() As Boolean
         ElseIf TypeOf ent Is AcadCircle Then
             ip = ent.Center
             AgregarPunto CDbl(ip(0)), CDbl(ip(1)), 0#, ""
+        ElseIf TypeOf ent Is AcadArc Then
+            ip = ent.Center
+            AgregarPunto CDbl(ip(0)), CDbl(ip(1)), 0#, ""
+        ElseIf TypeOf ent Is AcadEllipse Then
+            ip = ent.Center
+            AgregarPunto CDbl(ip(0)), CDbl(ip(1)), 0#, ""
         ElseIf TypeOf ent Is AcadPoint Then
             ip = ent.Coordinates
             AgregarPunto CDbl(ip(0)), CDbl(ip(1)), 0#, ""
+        Else
+            ' cualquier otra entidad: centro de su caja delimitadora
+            Dim x As Double, y As Double
+            If CentroEntidad(ent, x, y) Then AgregarPunto x, y, 0#, ""
         End If
     Next
 
     ss.Delete
     SeleccionManual = (nP > 0)
 End Function
+
+'------------------------------------------------------------------------------
+' Centro de la caja delimitadora de una entidad (respaldo universal).
+'------------------------------------------------------------------------------
+Private Function CentroEntidad(ent As AcadEntity, ByRef x As Double, ByRef y As Double) As Boolean
+    On Error GoTo fin
+    Dim lo As Variant, hi As Variant
+    ent.GetBoundingBox lo, hi
+    x = (CDbl(lo(0)) + CDbl(hi(0))) / 2#
+    y = (CDbl(lo(1)) + CDbl(hi(1))) / 2#
+    CentroEntidad = True
+fin:
+End Function
+
+'==============================================================================
+' DIAGNOSTICO: cuenta entidades por tipo en el espacio modelo.
+'==============================================================================
+Private Sub ContarEntidades(ByRef nBlk As Long, ByRef nCir As Long, ByRef nPnt As Long)
+    Dim ent As AcadEntity
+    nBlk = 0: nCir = 0: nPnt = 0
+    For Each ent In ThisDrawing.ModelSpace
+        If TypeOf ent Is AcadBlockReference Then
+            nBlk = nBlk + 1
+        ElseIf TypeOf ent Is AcadCircle Then
+            nCir = nCir + 1
+        ElseIf TypeOf ent Is AcadPoint Then
+            nPnt = nPnt + 1
+        End If
+    Next
+End Sub
+
+'==============================================================================
+' COLECTA TODOS LOS BLOQUES (cualquier nombre) como aspersores.
+'==============================================================================
+Private Sub ColectarBloques(zonaFiltro As String)
+    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255)
+    nP = 0
+    Dim ent As AcadEntity, br As AcadBlockReference, ip As Variant
+    For Each ent In ThisDrawing.ModelSpace
+        If TypeOf ent Is AcadBlockReference Then
+            Set br = ent
+            Dim zna As String
+            zna = UCase$(Trim$(AtributoBloque(br, "ZONA")))
+            If zonaFiltro = "" Or zna = zonaFiltro Then
+                ip = br.InsertionPoint
+                AgregarPunto CDbl(ip(0)), CDbl(ip(1)), _
+                             Val(AtributoBloque(br, "CAUDAL")), _
+                             AtributoBloque(br, "NUM")
+            End If
+        End If
+    Next
+End Sub
+
+'==============================================================================
+' COLECTA TODOS LOS CIRCULOS como aspersores (por su centro).
+'==============================================================================
+Private Sub ColectarCirculos()
+    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255)
+    nP = 0
+    Dim ent As AcadEntity, ip As Variant
+    For Each ent In ThisDrawing.ModelSpace
+        If TypeOf ent Is AcadCircle Then
+            ip = ent.Center
+            AgregarPunto CDbl(ip(0)), CDbl(ip(1)), 0#, ""
+        End If
+    Next
+End Sub
 
 '==============================================================================
 ' AUXILIARES DE PUNTOS
