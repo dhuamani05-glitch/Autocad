@@ -222,9 +222,9 @@ End Sub
 '   O(n^2): adecuado para cientos/miles de aspersores.
 '==============================================================================
 Private Sub Prim(ByRef parent() As Long, ByRef orden() As Long)
-    Dim inT() As Boolean
+    Dim enArbol() As Boolean
     Dim best() As Double
-    ReDim inT(nP - 1)
+    ReDim enArbol(nP - 1)
     ReDim best(nP - 1)
 
     Dim i As Long, j As Long
@@ -242,7 +242,7 @@ Private Sub Prim(ByRef parent() As Long, ByRef orden() As Long)
         Dim u As Long, mejor As Double
         u = -1: mejor = 1E+30
         For j = 0 To nP - 1
-            If Not inT(j) Then
+            If Not enArbol(j) Then
                 If best(j) < mejor Then
                     mejor = best(j)
                     u = j
@@ -251,13 +251,13 @@ Private Sub Prim(ByRef parent() As Long, ByRef orden() As Long)
         Next
         If u = -1 Then Exit For
 
-        inT(u) = True
+        enArbol(u) = True
         orden(nAdd) = u
         nAdd = nAdd + 1
 
         ' actualizar distancias de los nodos restantes hacia u
         For j = 0 To nP - 1
-            If Not inT(j) Then
+            If Not enArbol(j) Then
                 Dim d As Double
                 d = (pX(j) - pX(u)) ^ 2 + (pY(j) - pY(u)) ^ 2   ' cuadrado: basta para comparar
                 If d < best(j) Then
