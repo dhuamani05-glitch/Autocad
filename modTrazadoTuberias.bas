@@ -137,6 +137,23 @@ Public Sub TrazadoTuberias()
     vMax = Val(vTxt)
     If vMax <= 0.1 Then vMax = 1.5      ' vacio / cancelar -> valor por defecto
 
+    ' --- CRITERIO DE PRESION (mejor practica de riego) -------------------
+    ' La variacion de presion dentro del sector no debe superar ~20% de la
+    ' presion nominal del emisor. Se dimensionan los diametros para cumplirlo.
+    Dim pNom As Double, pctVar As Double, hwC As Double
+    pNom = Val(InputBox("Presion NOMINAL de operacion del aspersor (m.c.a.):" & vbCrLf & _
+                        "  20 m.c.a. = 2.0 bar (tipico en aspersion)", _
+                        "Criterio de presion", "20"))
+    If pNom <= 0# Then pNom = 20#
+    pctVar = Val(InputBox("Variacion MAXIMA de presion admisible en el sector (%):" & vbCrLf & _
+                          "  20 % = criterio estandar de diseno", _
+                          "Criterio de presion", "20"))
+    If pctVar <= 0# Then pctVar = 20#
+    hwC = Val(InputBox("Coeficiente de Hazen-Williams de la tuberia (C):" & vbCrLf & _
+                       "  150 = PVC / PE liso   |   140 = PVC usado", _
+                       "Criterio de presion", "150"))
+    If hwC <= 0# Then hwC = 150#
+
     CargarCatalogoDiametros
 
     Dim rotular As Boolean
@@ -173,6 +190,54 @@ Public Sub TrazadoTuberias()
     Next
 
     '======================================================================
+    ' 5b) DIMENSIONAMIENTO POR PRESION (criterio 20%)
+    '     Diametro de cada tramo = segDi(i). Se parte del minimo por
+    '     velocidad y se AGRANDA el tramo mas critico (mayor perdida de
+    '     carga) del camino peor hasta que la variacion de presion del
+    '     sector (perdida acumulada fuente -> emisor mas desfavorable)
+    '     sea <= pctVar% de la presion nominal.
+    '======================================================================
+    Dim segDi() As Long
+    ReDim segDi(nP - 1)
+    For i = 1 To nP - 1
+        segDi(i) = ElegirDiametro(acc(i), vMax)   ' piso por velocidad
+    Next
+
+    Dim admis As Double: admis = pctVar / 100# * pNom     ' variacion admisible (m.c.a.)
+    Dim cumHf() As Double: ReDim cumHf(nP - 1)
+    Dim worst As Double, worstNode As Long
+    Dim iterD As Long, nMax As Long: nMax = nP * nDiam + 20
+
+    For iterD = 1 To nMax
+        ComputarCumHf cumHf, parent, segDi, acc, orden, hwC
+        worst = 0#: worstNode = -1
+        For i = 1 To nP - 1
+            If cumHf(i) > worst Then worst = cumHf(i): worstNode = i
+        Next
+        If worst <= admis Or worstNode = -1 Then Exit For
+
+        ' agrandar el tramo de mayor perdida en el camino al nodo peor
+        Dim best As Long, bestHf As Double, nn As Long, hh As Double
+        best = -1: bestHf = -1#
+        nn = worstNode
+        Do While nn <> 0
+            If segDi(nn) < nDiam - 1 Then
+                hh = HfTramo(nn, segDi(nn), parent, acc, hwC)
+                If hh > bestHf Then bestHf = hh: best = nn
+            End If
+            nn = parent(nn)
+        Loop
+        If best = -1 Then Exit For        ' ya en el maximo del catalogo
+        segDi(best) = segDi(best) + 1
+    Next
+
+    ComputarCumHf cumHf, parent, segDi, acc, orden, hwC
+    worst = 0#
+    For i = 1 To nP - 1
+        If cumHf(i) > worst Then worst = cumHf(i)
+    Next
+
+    '======================================================================
     ' 6) DIBUJO DE LA RED  (una polilinea recta por tramo)
     '======================================================================
     Dim htxt As Double: htxt = AlturaTexto()
@@ -192,7 +257,7 @@ Public Sub TrazadoTuberias()
 
     For i = 1 To nP - 1
         flujo = acc(i)
-        di = ElegirDiametro(flujo, vMax)
+        di = segDi(i)
         dmm = gDiam(di)
 
         Dim L As Double
@@ -242,11 +307,29 @@ Public Sub TrazadoTuberias()
                   Format(longD(i), "0.00") & " m" & vbCrLf
         End If
     Next
+    Dim pctReal As Double: pctReal = 100# * worst / pNom
+    Dim veredicto As String
+    If worst <= admis + 0.0000001 Then
+        veredicto = "CUMPLE  (<= " & Format(pctVar, "0") & "%)"
+    Else
+        veredicto = "NO CUMPLE - revise (fraccione el sector / acorte" & vbCrLf & _
+                    "                   el recorrido / suba diametros mayores)"
+    End If
+
     rep = rep & vbCrLf & _
-          "Caudal total en la fuente: " & Format(acc(0), "0.0") & " l/min" & vbCrLf & _
-          "Cada tramo esta en la capa RIEGO_TUB_<diametro>; use" & vbCrLf & _
-          "DATAEXTRACTION filtrando por capa para totalizar metros" & vbCrLf & _
-          "por diametro (lista de materiales)."
+          "Caudal total en la fuente: " & Format(acc(0), "0.0") & " l/min" & vbCrLf & vbCrLf & _
+          "CRITERIO DE PRESION (mejor practica de riego):" & vbCrLf & _
+          "  Presion nominal:        " & Format(pNom, "0.0") & " m.c.a." & vbCrLf & _
+          "  Variacion admisible:    " & Format(pctVar, "0") & " %  = " & _
+                Format(admis, "0.00") & " m.c.a." & vbCrLf & _
+          "  Perdida en el emisor mas desfavorable:" & vbCrLf & _
+          "                          " & Format(worst, "0.00") & " m.c.a. (" & _
+                Format(pctReal, "0.0") & " % de la nominal)" & vbCrLf & _
+          "  Estado:                 " & veredicto & vbCrLf & vbCrLf & _
+          "(Perdidas por friccion Hazen-Williams, C=" & Format(hwC, "0") & _
+          "; no incluye desnivel." & vbCrLf & _
+          "Cada tramo en capa RIEGO_TUB_<diametro>; DATAEXTRACTION" & vbCrLf & _
+          "por capa da los metros por diametro para el presupuesto.)"
     MsgBox rep, vbInformation, "Trazado de tuberias"
     Exit Sub
 
@@ -328,6 +411,38 @@ Private Function ElegirDiametro(caudalLmin As Double, vMax As Double) As Long
     Next
     ElegirDiametro = nDiam - 1                  ' supera el catalogo: el mayor
 End Function
+
+'==============================================================================
+' PERDIDA DE CARGA de un tramo (Hazen-Williams), en m.c.a.
+'   hf = 10.67 * L * Q^1.852 / ( C^1.852 * D^4.871 )   [Q m3/s, D m, L m]
+'   El tramo que alimenta al nodo i lleva el caudal acc(i).
+'==============================================================================
+Private Function HfTramo(i As Long, di As Long, parent() As Long, _
+                         acc() As Double, hwC As Double) As Double
+    Dim Q As Double
+    Q = acc(i)
+    If Q <= 0# Then Exit Function
+    Dim L As Double, Dm As Double, Qm As Double
+    L = Sqr((pX(i) - pX(parent(i))) ^ 2 + (pY(i) - pY(parent(i))) ^ 2)
+    Dm = gDiam(di) / 1000#            ' mm -> m
+    Qm = Q / 60000#                   ' l/min -> m3/s
+    HfTramo = 10.67 * L * (Qm ^ 1.852) / ((hwC ^ 1.852) * (Dm ^ 4.871))
+End Function
+
+'==============================================================================
+' Perdida de carga ACUMULADA desde la fuente hasta cada nodo.
+'   Se recorre en el orden de descubrimiento (padre antes que hijo).
+'==============================================================================
+Private Sub ComputarCumHf(ByRef cumHf() As Double, parent() As Long, _
+                          segDi() As Long, acc() As Double, _
+                          orden() As Long, hwC As Double)
+    Dim k As Long, nd As Long
+    cumHf(0) = 0#
+    For k = 1 To nP - 1
+        nd = orden(k)
+        cumHf(nd) = cumHf(parent(nd)) + HfTramo(nd, segDi(nd), parent, acc, hwC)
+    Next
+End Sub
 
 '==============================================================================
 ' CATALOGO DE DIAMETROS COMERCIALES (mm) Y COLOR ASOCIADO
