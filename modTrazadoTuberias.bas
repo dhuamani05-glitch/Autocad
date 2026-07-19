@@ -46,6 +46,7 @@ Private pX() As Double
 Private pY() As Double
 Private pQ() As Double        ' demanda propia del nodo (l/min); fuente = 0
 Private pNum() As String      ' etiqueta NUM del aspersor (para reportes)
+Private pZona() As String     ' atributo ZONA del aspersor (para filtrar)
 Private nP As Long
 
 '--- Catalogo de diametros comerciales (mm) ----------------------------------
@@ -60,16 +61,11 @@ Public Sub TrazadoTuberias()
     On Error GoTo errH
 
     '======================================================================
-    ' 1) RECOLECTAR ASPERSORES
+    ' 1) RECOLECTAR ASPERSORES  (TODOS, sin filtrar por zona de entrada)
+    '    Firma del bloque de riego (modDisenoAspersion):
+    '      nombre "ASPERSOR_RIEGO_V*", capa "RIEGO_ASPERSOR", atributo NUM.
     '======================================================================
-    Dim zonaFiltro As String
-    zonaFiltro = UCase$(Trim$(InputBox( _
-        "Filtrar por ZONA / VALVULA (atributo ZONA del bloque)." & vbCrLf & _
-        "Deje VACIO para trazar TODOS los aspersores.", _
-        "Trazado de tuberias", "")))
-
-    ' Deteccion automatica de los bloques de aspersor (por nombre/atributo).
-    RecolectarAspersores zonaFiltro
+    RecolectarAspersores
 
     ' Si la deteccion automatica no encontro nada, mostrar un DIAGNOSTICO de
     ' lo que hay en el dibujo y dejar elegir de donde tomar los aspersores.
@@ -79,7 +75,7 @@ Public Sub TrazadoTuberias()
 
         Dim op As String
         op = Trim$(InputBox( _
-            "No se detectaron aspersores por nombre/atributo." & vbCrLf & _
+            "No se detectaron aspersores automaticamente." & vbCrLf & _
             "En el ESPACIO MODELO hay:" & vbCrLf & _
             "   - Bloques (INSERT):  " & nBlk & vbCrLf & _
             "   - Circulos:          " & nCir & vbCrLf & _
@@ -91,7 +87,7 @@ Public Sub TrazadoTuberias()
             "Trazado de tuberias - diagnostico", "1"))
 
         Select Case op
-            Case "1": ColectarBloques zonaFiltro
+            Case "1": ColectarBloques
             Case "2": ColectarCirculos
             Case Else: SeleccionManual
         End Select
@@ -103,6 +99,13 @@ Public Sub TrazadoTuberias()
                "o seleccionelos a mano.", vbExclamation, "Trazado de tuberias"
         Exit Sub
     End If
+
+    ' Filtro por ZONA: solo se ofrece si hay VARIAS zonas distintas, y se
+    ' listan las zonas realmente presentes (evita descartar todo por un
+    ' nombre mal escrito).
+    FiltrarPorZona
+
+    If nP < 1 Then Exit Sub
 
     ' Diagnostico: informar cuantos se van a conectar.
     If MsgBox("Se detectaron " & nP & " aspersores para conectar." & vbCrLf & vbCrLf & _
@@ -344,18 +347,20 @@ Private Sub CargarCatalogoDiametros()
 End Sub
 
 '==============================================================================
-' RECOLECCION AUTOMATICA de los aspersores colocados.
-'   Se considera "aspersor" cualquier bloque cuyo nombre contenga "ASPERSOR"
-'   O que tenga el atributo NUM o CAUDAL (firma del bloque de riego), asi
-'   funciona aunque el bloque tenga otro nombre.
-'   Lee INSERTIONPOINT y los atributos CAUDAL / NUM / ZONA.
+' RECOLECCION AUTOMATICA de TODOS los aspersores colocados.
+'   Segun modDisenoAspersion, cada aspersor es un BLOQUE con:
+'     - nombre "ASPERSOR_RIEGO_V*"  (contiene "ASPERSOR"), y/o
+'     - capa "RIEGO_ASPERSOR",       y/o
+'     - atributo NUM / CAUDAL.
+'   Se acepta si cumple CUALQUIERA de esas senales (robusto ante cambios de
+'   version o de nombre). Lee INSERTIONPOINT y atributos CAUDAL / NUM / ZONA.
 '==============================================================================
-Private Function RecolectarAspersores(zonaFiltro As String) As Boolean
-    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255)
+Private Sub RecolectarAspersores()
+    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255): ReDim pZona(255)
     nP = 0
 
     Dim ent As AcadEntity, br As AcadBlockReference
-    Dim nombre As String, esAspersor As Boolean
+    Dim nombre As String, capa As String, esAspersor As Boolean
     For Each ent In ThisDrawing.ModelSpace
         If TypeOf ent Is AcadBlockReference Then
             Set br = ent
@@ -363,28 +368,27 @@ Private Function RecolectarAspersores(zonaFiltro As String) As Boolean
             On Error Resume Next
             nombre = br.EffectiveName
             If nombre = "" Then nombre = br.Name
+            capa = br.Layer
             On Error GoTo 0
 
             esAspersor = (InStr(1, UCase$(nombre), "ASPERSOR", vbTextCompare) > 0)
+            If Not esAspersor Then
+                esAspersor = (InStr(1, UCase$(capa), "RIEGO_ASPERSOR", vbTextCompare) > 0)
+            End If
             If Not esAspersor Then
                 esAspersor = TieneAtributo(br, "NUM") Or TieneAtributo(br, "CAUDAL")
             End If
 
             If esAspersor Then
-                Dim zna As String
-                zna = UCase$(Trim$(AtributoBloque(br, "ZONA")))
-                If zonaFiltro = "" Or zna = zonaFiltro Then
-                    Dim ip As Variant: ip = br.InsertionPoint
-                    Dim qs As String: qs = AtributoBloque(br, "CAUDAL")
-                    AgregarPunto CDbl(ip(0)), CDbl(ip(1)), Val(qs), _
-                                 AtributoBloque(br, "NUM")
-                End If
+                Dim ip As Variant: ip = br.InsertionPoint
+                AgregarPunto CDbl(ip(0)), CDbl(ip(1)), _
+                             Val(AtributoBloque(br, "CAUDAL")), _
+                             AtributoBloque(br, "NUM"), _
+                             UCase$(Trim$(AtributoBloque(br, "ZONA")))
             End If
         End If
     Next
-
-    RecolectarAspersores = (nP > 0)
-End Function
+End Sub
 
 '------------------------------------------------------------------------------
 ' Verdadero si el bloque tiene un atributo con ese TAG.
@@ -435,7 +439,7 @@ Private Function SeleccionManual() As Boolean
         "Seleccione los aspersores a conectar (bloques / circulos / puntos): "
     ss.SelectOnScreen
 
-    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255)
+    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255): ReDim pZona(255)
     nP = 0
 
     Dim ent As AcadEntity, ip As Variant
@@ -501,21 +505,18 @@ End Sub
 '==============================================================================
 ' COLECTA TODOS LOS BLOQUES (cualquier nombre) como aspersores.
 '==============================================================================
-Private Sub ColectarBloques(zonaFiltro As String)
-    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255)
+Private Sub ColectarBloques()
+    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255): ReDim pZona(255)
     nP = 0
     Dim ent As AcadEntity, br As AcadBlockReference, ip As Variant
     For Each ent In ThisDrawing.ModelSpace
         If TypeOf ent Is AcadBlockReference Then
             Set br = ent
-            Dim zna As String
-            zna = UCase$(Trim$(AtributoBloque(br, "ZONA")))
-            If zonaFiltro = "" Or zna = zonaFiltro Then
-                ip = br.InsertionPoint
-                AgregarPunto CDbl(ip(0)), CDbl(ip(1)), _
-                             Val(AtributoBloque(br, "CAUDAL")), _
-                             AtributoBloque(br, "NUM")
-            End If
+            ip = br.InsertionPoint
+            AgregarPunto CDbl(ip(0)), CDbl(ip(1)), _
+                         Val(AtributoBloque(br, "CAUDAL")), _
+                         AtributoBloque(br, "NUM"), _
+                         UCase$(Trim$(AtributoBloque(br, "ZONA")))
         End If
     Next
 End Sub
@@ -524,7 +525,7 @@ End Sub
 ' COLECTA TODOS LOS CIRCULOS como aspersores (por su centro).
 '==============================================================================
 Private Sub ColectarCirculos()
-    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255)
+    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255): ReDim pZona(255)
     nP = 0
     Dim ent As AcadEntity, ip As Variant
     For Each ent In ThisDrawing.ModelSpace
@@ -536,9 +537,57 @@ Private Sub ColectarCirculos()
 End Sub
 
 '==============================================================================
+' FILTRO POR ZONA: solo actua si hay VARIAS zonas distintas presentes.
+' Lista las zonas reales y deja elegir una (o todas). Evita descartar todo
+' por un nombre de zona mal escrito.  Se llama ANTES de insertar la fuente.
+'==============================================================================
+Private Sub FiltrarPorZona()
+    Dim zonas(63) As String, nz As Long
+    Dim i As Long, j As Long, existe As Boolean
+    nz = 0
+    For i = 0 To nP - 1
+        If pZona(i) <> "" Then
+            existe = False
+            For j = 0 To nz - 1
+                If zonas(j) = pZona(i) Then existe = True
+            Next
+            If Not existe And nz < 64 Then
+                zonas(nz) = pZona(i)
+                nz = nz + 1
+            End If
+        End If
+    Next
+    If nz <= 1 Then Exit Sub          ' 0 o 1 zona: no hay nada que elegir
+
+    Dim lista As String
+    For i = 0 To nz - 1
+        lista = lista & "   " & zonas(i) & vbCrLf
+    Next
+    Dim sel As String
+    sel = UCase$(Trim$(InputBox( _
+        "Hay aspersores de varias ZONAS / VALVULAS:" & vbCrLf & lista & vbCrLf & _
+        "Escriba la ZONA a trazar, o deje VACIO para trazar TODAS.", _
+        "Filtro por zona", "")))
+    If sel = "" Then Exit Sub
+
+    Dim k As Long: k = 0
+    For i = 0 To nP - 1
+        If pZona(i) = sel Then
+            pX(k) = pX(i): pY(k) = pY(i): pQ(k) = pQ(i)
+            pNum(k) = pNum(i): pZona(k) = pZona(i)
+            k = k + 1
+        End If
+    Next
+    nP = k
+    If nP = 0 Then _
+        MsgBox "Ningun aspersor tiene la zona '" & sel & "'.", vbExclamation
+End Sub
+
+'==============================================================================
 ' AUXILIARES DE PUNTOS
 '==============================================================================
-Private Sub AgregarPunto(x As Double, y As Double, q As Double, num As String)
+Private Sub AgregarPunto(x As Double, y As Double, q As Double, num As String, _
+                         Optional zona As String = "")
     ' evita duplicados exactos (mismo aspersor contado dos veces)
     Dim i As Long
     For i = 0 To nP - 1
@@ -549,8 +598,9 @@ Private Sub AgregarPunto(x As Double, y As Double, q As Double, num As String)
         ReDim Preserve pY(UBound(pY) + 256)
         ReDim Preserve pQ(UBound(pQ) + 256)
         ReDim Preserve pNum(UBound(pNum) + 256)
+        ReDim Preserve pZona(UBound(pZona) + 256)
     End If
-    pX(nP) = x: pY(nP) = y: pQ(nP) = q: pNum(nP) = num
+    pX(nP) = x: pY(nP) = y: pQ(nP) = q: pNum(nP) = num: pZona(nP) = zona
     nP = nP + 1
 End Sub
 
@@ -561,13 +611,14 @@ Private Sub InsertarFuente(x As Double, y As Double)
         ReDim Preserve pY(UBound(pY) + 256)
         ReDim Preserve pQ(UBound(pQ) + 256)
         ReDim Preserve pNum(UBound(pNum) + 256)
+        ReDim Preserve pZona(UBound(pZona) + 256)
     End If
     Dim i As Long
     For i = nP To 1 Step -1
         pX(i) = pX(i - 1): pY(i) = pY(i - 1)
-        pQ(i) = pQ(i - 1): pNum(i) = pNum(i - 1)
+        pQ(i) = pQ(i - 1): pNum(i) = pNum(i - 1): pZona(i) = pZona(i - 1)
     Next
-    pX(0) = x: pY(0) = y: pQ(0) = 0#: pNum(0) = "FUENTE"
+    pX(0) = x: pY(0) = y: pQ(0) = 0#: pNum(0) = "FUENTE": pZona(0) = ""
     nP = nP + 1
 End Sub
 
