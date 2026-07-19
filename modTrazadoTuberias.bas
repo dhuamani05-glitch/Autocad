@@ -68,20 +68,30 @@ Public Sub TrazadoTuberias()
         "Deje VACIO para trazar TODOS los aspersores.", _
         "Trazado de tuberias", "")))
 
-    If Not RecolectarAspersores(zonaFiltro) Then
-        If Not SeleccionManual() Then
-            MsgBox "No se encontraron aspersores para conectar." & vbCrLf & _
-                   "Coloque primero los aspersores (modDisenoAspersion) o" & vbCrLf & _
-                   "seleccione bloques/circulos/puntos a mano.", _
-                   vbExclamation, "Trazado de tuberias"
-            Exit Sub
-        End If
+    ' Deteccion automatica de los bloques de aspersor.
+    RecolectarAspersores zonaFiltro
+
+    ' Si la deteccion automatica no encontro nada, ofrecer seleccion manual.
+    If nP = 0 Then
+        MsgBox "No se detectaron bloques de aspersor automaticamente." & vbCrLf & _
+               "A continuacion SELECCIONE en pantalla los aspersores" & vbCrLf & _
+               "(bloques / circulos / puntos) y presione ENTER.", _
+               vbInformation, "Trazado de tuberias"
+        SeleccionManual
     End If
 
     If nP < 1 Then
-        MsgBox "No hay aspersores validos para conectar.", vbExclamation
+        MsgBox "No hay aspersores para conectar." & vbCrLf & _
+               "Coloque primero los aspersores (modDisenoAspersion)" & vbCrLf & _
+               "o seleccionelos a mano.", vbExclamation, "Trazado de tuberias"
         Exit Sub
     End If
+
+    ' Diagnostico: informar cuantos se van a conectar.
+    If MsgBox("Se detectaron " & nP & " aspersores para conectar." & vbCrLf & vbCrLf & _
+              "A continuacion se pedira el punto de FUENTE (cabezal/valvula)." & vbCrLf & _
+              "Desea continuar?", vbOKCancel + vbInformation, _
+              "Trazado de tuberias") = vbCancel Then Exit Sub
 
     '======================================================================
     ' 2) PUNTO DE FUENTE (cabezal / valvula) = nodo 0
@@ -104,9 +114,8 @@ Public Sub TrazadoTuberias()
                     "  1.5  = recomendado para PVC/PE" & vbCrLf & _
                     "  (menor velocidad -> diametros mas grandes)", _
                     "Criterio hidraulico", "1.5")
-    If vTxt = "" Then Exit Sub
     vMax = Val(vTxt)
-    If vMax <= 0.1 Then vMax = 1.5
+    If vMax <= 0.1 Then vMax = 1.5      ' vacio / cancelar -> valor por defecto
 
     CargarCatalogoDiametros
 
@@ -151,6 +160,15 @@ Public Sub TrazadoTuberias()
     Dim longD(0 To 63) As Double         ' metros por diametro
     Dim longTot As Double
     Dim di As Long, dmm As Double, flujo As Double
+
+    ' --- marcador de la FUENTE (cabezal / valvula) ---
+    CrearCapa "RIEGO_FUENTE", 1
+    Dim cf(0 To 2) As Double
+    cf(0) = pX(0): cf(1) = pY(0): cf(2) = 0#
+    Dim mkr As AcadCircle
+    Set mkr = ThisDrawing.ModelSpace.AddCircle(cf, htxt * 1.5)
+    mkr.Layer = "RIEGO_FUENTE"
+    mkr.color = 1
 
     For i = 1 To nP - 1
         flujo = acc(i)
@@ -309,7 +327,10 @@ Private Sub CargarCatalogoDiametros()
 End Sub
 
 '==============================================================================
-' RECOLECCION AUTOMATICA: bloques cuyo nombre contiene "ASPERSOR".
+' RECOLECCION AUTOMATICA de los aspersores colocados.
+'   Se considera "aspersor" cualquier bloque cuyo nombre contenga "ASPERSOR"
+'   O que tenga el atributo NUM o CAUDAL (firma del bloque de riego), asi
+'   funciona aunque el bloque tenga otro nombre.
 '   Lee INSERTIONPOINT y los atributos CAUDAL / NUM / ZONA.
 '==============================================================================
 Private Function RecolectarAspersores(zonaFiltro As String) As Boolean
@@ -317,7 +338,7 @@ Private Function RecolectarAspersores(zonaFiltro As String) As Boolean
     nP = 0
 
     Dim ent As AcadEntity, br As AcadBlockReference
-    Dim nombre As String
+    Dim nombre As String, esAspersor As Boolean
     For Each ent In ThisDrawing.ModelSpace
         If TypeOf ent Is AcadBlockReference Then
             Set br = ent
@@ -327,7 +348,12 @@ Private Function RecolectarAspersores(zonaFiltro As String) As Boolean
             If nombre = "" Then nombre = br.Name
             On Error GoTo 0
 
-            If InStr(1, UCase$(nombre), "ASPERSOR", vbTextCompare) > 0 Then
+            esAspersor = (InStr(1, UCase$(nombre), "ASPERSOR", vbTextCompare) > 0)
+            If Not esAspersor Then
+                esAspersor = TieneAtributo(br, "NUM") Or TieneAtributo(br, "CAUDAL")
+            End If
+
+            If esAspersor Then
                 Dim zna As String
                 zna = UCase$(Trim$(AtributoBloque(br, "ZONA")))
                 If zonaFiltro = "" Or zna = zonaFiltro Then
@@ -341,6 +367,23 @@ Private Function RecolectarAspersores(zonaFiltro As String) As Boolean
     Next
 
     RecolectarAspersores = (nP > 0)
+End Function
+
+'------------------------------------------------------------------------------
+' Verdadero si el bloque tiene un atributo con ese TAG.
+'------------------------------------------------------------------------------
+Private Function TieneAtributo(br As AcadBlockReference, tag As String) As Boolean
+    On Error Resume Next
+    Dim atts As Variant, i As Long
+    If br.HasAttributes Then
+        atts = br.GetAttributes
+        For i = LBound(atts) To UBound(atts)
+            If UCase$(atts(i).TagString) = UCase$(tag) Then
+                TieneAtributo = True
+                Exit Function
+            End If
+        Next
+    End If
 End Function
 
 '------------------------------------------------------------------------------
