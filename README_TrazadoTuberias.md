@@ -15,18 +15,29 @@ y la dimensiona según las mejores prácticas de riego.
    Pocos emisores en serie por lateral.
 3. **Árbol (MST, Prim)** — mínima longitud total de tubería (menor material).
 
-## Criterio hidráulico (regla del 20%)
+## Criterio hidráulico (regla del 20%) con desnivel
 
 En diseño de riego la variación de presión dentro del sector no debe superar
 ~20% de la presión nominal del emisor. El módulo:
 
 - Calcula la **pérdida de carga Hazen-Williams** en cada tramo con el caudal
   acumulado aguas abajo.
+- Incluye el **desnivel**: la variación de presión = fricción + diferencia de
+  cota entre emisores. La cota sale de la **Z de los bloques** (si el dibujo es
+  3D) y/o de una **pendiente de terreno** (%) y **azimut de subida** que se
+  piden al ejecutar.
 - Dimensiona el diámetro de cada tramo partiendo del **mínimo por velocidad** y
-  **agranda el tramo más crítico** del camino peor hasta que la variación de
-  presión ≤ % admisible (configurable, por defecto 20%).
-- El reporte indica la pérdida en el emisor más desfavorable, su % de la
-  nominal y **CUMPLE / NO CUMPLE**.
+  **agranda el tramo más crítico** hasta que la variación ≤ % admisible.
+- El reporte indica la variación obtenida, el aporte del desnivel y
+  **CUMPLE / NO CUMPLE**. Si el desnivel por sí solo supera el %, avisa que
+  ninguna tubería lo corrige (sectorizar o regular presión).
+
+## Comparativo automático
+
+Antes de dibujar, el módulo **evalúa las 3 disposiciones** (sin dibujarlas) y
+muestra una tabla con: longitud total, variación de presión (m y %), índice de
+costo (longitud × diámetro) y CUMPLE/FALLA. Marca la **recomendada** (menor
+costo entre las que cumplen) y te deja elegir cuál dibujar (Enter = recomendada).
 
 ## Uso
 
