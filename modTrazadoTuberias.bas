@@ -216,7 +216,11 @@ Public Sub TrazadoTuberias()
     If gNN < 2 Then Exit Sub
     DimensionarRed vMax, pNom, pctVar, hwC, vM, cmpl, lt, ct
 
-    Dim htxt As Double: htxt = AlturaTexto()
+    ' Altura de rotulo UNIFORME, escalada al tramo mas corto del sector,
+    ' para que todas las etiquetas queden iguales y quepan en la linea corta.
+    Dim htxt As Double: htxt = LongMinTramo() * 0.2
+    Dim gScale As Double: gScale = AlturaTexto()      ' escala general (marcador)
+    If htxt <= 0# Then htxt = gScale
     Dim usados(0 To 63) As Boolean
     Dim longD(0 To 63) As Double
     Dim longTot As Double
@@ -225,14 +229,14 @@ Public Sub TrazadoTuberias()
     Dim cf(0 To 2) As Double
     cf(0) = gNX(0): cf(1) = gNY(0): cf(2) = 0#
     Dim mkr As AcadCircle
-    Set mkr = ThisDrawing.ModelSpace.AddCircle(cf, htxt * 1.5)
+    Set mkr = ThisDrawing.ModelSpace.AddCircle(cf, gScale * 1.2)
     mkr.Layer = "RIEGO_FUENTE": mkr.color = 1
 
     For i = 1 To gNN - 1
-        DibujarTramo gPar(i), i, gSeg(i), gAcc(i), rotular, htxt, longTot, longD, usados
+        DibujarTramo gPar(i), i, gSeg(i), rotular, htxt, longTot, longD, usados
     Next
     For i = 0 To gNEx - 1
-        DibujarTramo gExA(i), gExB(i), 0, 0#, False, htxt, longTot, longD, usados
+        DibujarTramo gExA(i), gExB(i), 0, False, htxt, longTot, longD, usados
     Next
     ThisDrawing.Regen acActiveViewport
 
@@ -871,7 +875,7 @@ End Sub
 '==============================================================================
 ' DIBUJO Y UTILIDADES
 '==============================================================================
-Private Sub DibujarTramo(a As Long, b As Long, di As Long, flujo As Double, _
+Private Sub DibujarTramo(a As Long, b As Long, di As Long, _
                          rotular As Boolean, htxt As Double, _
                          ByRef longTot As Double, ByRef longD() As Double, _
                          ByRef usados() As Boolean)
@@ -889,26 +893,55 @@ Private Sub DibujarTramo(a As Long, b As Long, di As Long, flujo As Double, _
     Dim tub As AcadLWPolyline
     Set tub = ThisDrawing.ModelSpace.AddLightWeightPolyline(pts)
     tub.Layer = capa: tub.color = gDiamColor(di)
-    If rotular Then RotularTramo gNX(a), gNY(a), gNX(b), gNY(b), dmm, flujo, htxt
+    If rotular Then RotularTramo gNX(a), gNY(a), gNX(b), gNY(b), dmm, htxt
 End Sub
 
+'--- rotulo del tramo: simbolo de diametro (codigo AutoCAD %%C que dibuja el
+'    simbolo diametro), altura UNIFORME (h), centrado y alineado a la linea. --
 Private Sub RotularTramo(x1 As Double, y1 As Double, x2 As Double, y2 As Double, _
-                         dmm As Double, caudal As Double, h As Double)
+                         dmm As Double, h As Double)
     CrearCapa "RIEGO_TUB_TXT", 8
-    Dim mx As Double, my As Double, ang As Double
+    Dim dx As Double, dy As Double, ln As Double
+    dx = x2 - x1: dy = y2 - y1
+    ln = Sqr(dx * dx + dy * dy)
+    If ln < 0.000000001 Then Exit Sub
+
+    Dim mx As Double, my As Double, px As Double, py As Double
     mx = (x1 + x2) / 2#: my = (y1 + y2) / 2#
+    px = -dy / ln: py = dx / ln                    ' perpendicular unitario
+
     Dim ins(0 To 2) As Double
-    ins(0) = mx: ins(1) = my + h * 0.4: ins(2) = 0#
+    ins(0) = mx + px * h * 0.9
+    ins(1) = my + py * h * 0.9
+    ins(2) = 0#
+
     Dim txt As AcadText
-    Set txt = ThisDrawing.ModelSpace.AddText( _
-        "D" & Format(dmm, "0") & " (" & Format(caudal, "0.0") & " l/min)", ins, h)
+    Set txt = ThisDrawing.ModelSpace.AddText("%%C" & Format(dmm, "0"), ins, h)
     txt.Layer = "RIEGO_TUB_TXT"
-    ang = Atan2(y2 - y1, x2 - x1)
+
+    Dim ang As Double
+    ang = Atan2(dy, dx)
     If ang > PI / 2# Then ang = ang - PI
     If ang < -PI / 2# Then ang = ang + PI
     txt.Rotation = ang
-    txt.Alignment = acAlignmentLeft
+    txt.Alignment = acAlignmentMiddleCenter
+    txt.TextAlignmentPoint = ins
 End Sub
+
+'--- longitud del tramo dibujado mas corto (para escalar los rotulos) --------
+Private Function LongMinTramo() As Double
+    Dim i As Long, L As Double, mn As Double: mn = 1E+30
+    For i = 1 To gNN - 1
+        L = Sqr((gNX(i) - gNX(gPar(i))) ^ 2 + (gNY(i) - gNY(gPar(i))) ^ 2)
+        If L > 0.000001 And L < mn Then mn = L
+    Next
+    For i = 0 To gNEx - 1
+        L = Sqr((gNX(gExB(i)) - gNX(gExA(i))) ^ 2 + (gNY(gExB(i)) - gNY(gExA(i))) ^ 2)
+        If L > 0.000001 And L < mn Then mn = L
+    Next
+    If mn >= 1E+29 Then mn = 1#
+    LongMinTramo = mn
+End Function
 
 Private Function AlturaTexto() As Double
     Dim xmn As Double, xmx As Double, ymn As Double, ymx As Double, i As Long
