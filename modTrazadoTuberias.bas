@@ -439,16 +439,16 @@ Private Sub ConstruirAnillo()
         chain(nc) = nxt: used(nxt) = True: cur = nxt: nc = nc + 1
     Loop
 
-    Dim D As Double: D = 0#
-    For i = 0 To ns - 1: D = D + pQ(chain(i)): Next
+    Dim dTot As Double: dTot = 0#
+    For i = 0 To ns - 1: dTot = dTot + pQ(chain(i)): Next
     Dim m As Long
-    If D <= 0# Then
+    If dTot <= 0# Then
         m = ns \ 2
     Else
         Dim cum As Double: cum = 0#: m = 0
         For i = 1 To ns - 1
             cum = cum + pQ(chain(i))
-            If cum >= D / 2# Then m = i: Exit For
+            If cum >= dTot / 2# Then m = i: Exit For
         Next
         If m = 0 Then m = ns \ 2
     End If
