@@ -1,53 +1,54 @@
 Attribute VB_Name = "modTrazadoTuberias"
 Option Explicit
 '==============================================================================
-' TRAZADO DE TUBERIAS DE RIEGO MEDIANTE POLILINEAS  (v1)
+' TRAZADO DE TUBERIAS DE RIEGO MEDIANTE POLILINEAS  (v2)
 '------------------------------------------------------------------------------
-' Complemento de "modDisenoAspersion" (distribucion de aspersores).
+' Complemento de "modDisenoAspersion". Conecta los aspersores colocados
+' (bloques ASPERSOR_RIEGO_* en capa RIEGO_ASPERSOR) con un punto de FUENTE
+' (cabezal / valvula) trazando la red con POLILINEAS.
 '
-' OBJETIVO: dado un conjunto de aspersores ya colocados (bloques
-' ASPERSOR_RIEGO_* en la capa RIEGO_ASPERSOR) y un punto de FUENTE
-' (cabezal / valvula), trazar la red de tuberias que los conecta a TODOS
-' con la MENOR longitud total posible, dibujada con POLILINEAS.
+' DISPOSICIONES (el usuario elige al ejecutar):
+'   1 = ANILLO (looped main): cierra el perimetro en bucle alimentado desde
+'       la fuente; el caudal se reparte por las dos ramas -> menor friccion
+'       y presion mas uniforme. Recomendado para aspersores en perimetro.
+'   2 = PRINCIPAL + LATERALES: una troncal a lo largo del eje dominante con
+'       laterales perpendiculares a cada aspersor (pocos emisores en serie).
+'   3 = ARBOL (MST, Prim): minima longitud total de tuberia (menor material).
 '
-' POR QUE ES "LO MAS EFICIENTE POSIBLE"?
-'   Conectar N puntos con tuberia, sin bucles (un arbol), gastando la
-'   menor cantidad de tuberia, es EXACTAMENTE el problema del ARBOL DE
-'   EXPANSION MINIMA (Minimum Spanning Tree). Este modulo lo resuelve con
-'   el algoritmo de PRIM: garantiza el arbol de menor longitud total que
-'   une la fuente con cada aspersor (optimo, no heuristico). No existe
-'   ningun otro arbol de aristas aspersor-aspersor mas corto.
+' CRITERIO HIDRAULICO (mejor practica de riego):
+'   La variacion de presion dentro del sector no debe superar ~20% de la
+'   presion nominal del emisor. Se dimensiona el diametro de cada tramo
+'   (Hazen-Williams) partiendo del minimo por velocidad y agrandando el
+'   tramo mas critico hasta cumplir el criterio. El reporte indica la
+'   variacion real y si CUMPLE / NO CUMPLE.
 '
-' ADEMAS (dimensionamiento hidraulico):
-'   - Enraiza el arbol en la FUENTE y calcula, para cada tramo, el CAUDAL
-'     que transporta = suma de los caudales de los aspersores "aguas
-'     abajo" de ese tramo.
-'   - Elige para cada tramo el DIAMETRO comercial mas pequeno que respeta
-'     una velocidad maxima (por defecto 1.5 m/s): la red mas barata que
-'     cumple el criterio hidraulico.
-'   - Coloca cada tramo en una capa por diametro (RIEGO_TUB_xx) para
-'     poder totalizar metros por diametro con DATAEXTRACTION, y opcional-
-'     mente rotula cada tramo con su diametro y caudal.
-'
-' ENTRADAS:
-'   - Aspersores: se detectan solos (bloques con "ASPERSOR" en el nombre).
-'     Si no hay, se pueden seleccionar a mano (bloques / circulos / puntos).
-'   - Punto de FUENTE (cabezal/valvula): se pide con el mouse.
-'   - Filtro opcional por ZONA (atributo ZONA del bloque).
-'
-' CAPAS QUE CREA: RIEGO_TUB_16, _20, _25, ... (una por diametro usado) y
-'                 RIEGO_TUB_TXT (rotulos).
+' CAPAS: RIEGO_TUB_<diametro> (una por diametro), RIEGO_TUB_TXT (rotulos),
+'        RIEGO_FUENTE (marcador de la fuente).
 '==============================================================================
 
 Private Const PI As Double = 3.14159265358979
 
-'--- Puntos a conectar (indice 0 = FUENTE) -----------------------------------
+'--- Aspersores detectados (indice 0 = FUENTE tras InsertarFuente) ------------
 Private pX() As Double
 Private pY() As Double
-Private pQ() As Double        ' demanda propia del nodo (l/min); fuente = 0
-Private pNum() As String      ' etiqueta NUM del aspersor (para reportes)
-Private pZona() As String     ' atributo ZONA del aspersor (para filtrar)
+Private pQ() As Double         ' demanda propia del nodo (l/min); fuente = 0
+Private pNum() As String       ' etiqueta NUM del aspersor
+Private pZona() As String      ' atributo ZONA del aspersor
 Private nP As Long
+
+'--- Red construida como ARBOL enraizado en la fuente (nodo 0) ----------------
+'    Los nodos incluyen la fuente, los aspersores y (en principal+laterales)
+'    nodos de union (tees) sobre la troncal.
+Private gNX() As Double        ' coordenada X del nodo
+Private gNY() As Double        ' coordenada Y del nodo
+Private gDem() As Double       ' demanda del nodo (l/min)
+Private gPar() As Long         ' nodo padre (gPar(0) = -1 = raiz)
+Private gOrd() As Long         ' orden topologico (padre antes que hijo)
+Private gNN As Long            ' numero de nodos
+'--- Aristas EXTRA que cierran bucles (no son del arbol): anillo -------------
+Private gExA() As Long
+Private gExB() As Long
+Private gNEx As Long
 
 '--- Catalogo de diametros comerciales (mm) ----------------------------------
 Private gDiam() As Double
@@ -61,18 +62,13 @@ Public Sub TrazadoTuberias()
     On Error GoTo errH
 
     '======================================================================
-    ' 1) RECOLECTAR ASPERSORES  (TODOS, sin filtrar por zona de entrada)
-    '    Firma del bloque de riego (modDisenoAspersion):
-    '      nombre "ASPERSOR_RIEGO_V*", capa "RIEGO_ASPERSOR", atributo NUM.
+    ' 1) RECOLECTAR ASPERSORES (por firma del bloque de modDisenoAspersion)
     '======================================================================
     RecolectarAspersores
 
-    ' Si la deteccion automatica no encontro nada, mostrar un DIAGNOSTICO de
-    ' lo que hay en el dibujo y dejar elegir de donde tomar los aspersores.
     If nP = 0 Then
         Dim nBlk As Long, nCir As Long, nPnt As Long
         ContarEntidades nBlk, nCir, nPnt
-
         Dim op As String
         op = Trim$(InputBox( _
             "No se detectaron aspersores automaticamente." & vbCrLf & _
@@ -85,7 +81,6 @@ Public Sub TrazadoTuberias()
             "   2 = TODOS los circulos" & vbCrLf & _
             "   3 = SELECCIONARLOS a mano en pantalla", _
             "Trazado de tuberias - diagnostico", "1"))
-
         Select Case op
             Case "1": ColectarBloques
             Case "2": ColectarCirculos
@@ -100,14 +95,9 @@ Public Sub TrazadoTuberias()
         Exit Sub
     End If
 
-    ' Filtro por ZONA: solo se ofrece si hay VARIAS zonas distintas, y se
-    ' listan las zonas realmente presentes (evita descartar todo por un
-    ' nombre mal escrito).
     FiltrarPorZona
-
     If nP < 1 Then Exit Sub
 
-    ' Diagnostico: informar cuantos se van a conectar.
     If MsgBox("Se detectaron " & nP & " aspersores para conectar." & vbCrLf & vbCrLf & _
               "A continuacion se pedira el punto de FUENTE (cabezal/valvula)." & vbCrLf & _
               "Desea continuar?", vbOKCancel + vbInformation, _
@@ -122,24 +112,17 @@ Public Sub TrazadoTuberias()
           "Indique el punto de FUENTE (cabezal / valvula): ")
     If Err.Number <> 0 Then Exit Sub          ' ESC
     On Error GoTo errH
-
-    ' Inserta la fuente al inicio del arreglo (desplaza el resto).
     InsertarFuente CDbl(src(0)), CDbl(src(1))
 
     '======================================================================
-    ' 3) CRITERIO HIDRAULICO (velocidad maxima) Y CATALOGO DE DIAMETROS
+    ' 3) CRITERIOS DE DISENO
     '======================================================================
-    Dim vTxt As String, vMax As Double
-    vTxt = InputBox("Velocidad maxima admisible en la tuberia (m/s):" & vbCrLf & _
-                    "  1.5  = recomendado para PVC/PE" & vbCrLf & _
-                    "  (menor velocidad -> diametros mas grandes)", _
-                    "Criterio hidraulico", "1.5")
-    vMax = Val(vTxt)
-    If vMax <= 0.1 Then vMax = 1.5      ' vacio / cancelar -> valor por defecto
+    Dim vMax As Double
+    vMax = Val(InputBox("Velocidad maxima admisible en la tuberia (m/s):" & vbCrLf & _
+                        "  1.5 = recomendado para PVC/PE", _
+                        "Criterio hidraulico", "1.5"))
+    If vMax <= 0.1 Then vMax = 1.5
 
-    ' --- CRITERIO DE PRESION (mejor practica de riego) -------------------
-    ' La variacion de presion dentro del sector no debe superar ~20% de la
-    ' presion nominal del emisor. Se dimensionan los diametros para cumplirlo.
     Dim pNom As Double, pctVar As Double, hwC As Double
     pNom = Val(InputBox("Presion NOMINAL de operacion del aspersor (m.c.a.):" & vbCrLf & _
                         "  20 m.c.a. = 2.0 bar (tipico en aspersion)", _
@@ -149,155 +132,142 @@ Public Sub TrazadoTuberias()
                           "  20 % = criterio estandar de diseno", _
                           "Criterio de presion", "20"))
     If pctVar <= 0# Then pctVar = 20#
-    hwC = Val(InputBox("Coeficiente de Hazen-Williams de la tuberia (C):" & vbCrLf & _
+    hwC = Val(InputBox("Coeficiente de Hazen-Williams (C):" & vbCrLf & _
                        "  150 = PVC / PE liso   |   140 = PVC usado", _
                        "Criterio de presion", "150"))
     If hwC <= 0# Then hwC = 150#
-
-    CargarCatalogoDiametros
 
     Dim rotular As Boolean
     rotular = (UCase$(Trim$(InputBox( _
         "Rotular cada tramo con su diametro y caudal?  (S/N)", _
         "Rotulos", "S"))) = "S")
 
-    '======================================================================
-    ' 4) ARBOL DE EXPANSION MINIMA (PRIM)  -> longitud total minima
-    '======================================================================
-    Dim parent() As Long
-    Dim orden() As Long
-    ReDim parent(nP - 1)
-    ReDim orden(nP - 1)
-    Prim parent, orden
+    CargarCatalogoDiametros
 
     '======================================================================
-    ' 5) CAUDAL AGUAS ABAJO EN CADA TRAMO (enraizado en la fuente)
-    '    acc(i) = suma de demandas del subarbol que cuelga de i.
-    '    El tramo (parent(i) -> i) transporta acc(i).
+    ' 4) DISPOSICION DE LA RED (el usuario elige) -> construye el ARBOL
+    '======================================================================
+    Dim topo As String, topoName As String
+    topo = Trim$(InputBox( _
+        "DISPOSICION de la red de tuberias:" & vbCrLf & vbCrLf & _
+        "  1 = ANILLO (looped main)" & vbCrLf & _
+        "        presion mas uniforme; recomendado para aspersores" & vbCrLf & _
+        "        distribuidos en el perimetro" & vbCrLf & _
+        "  2 = PRINCIPAL + LATERALES" & vbCrLf & _
+        "        troncal en el eje con laterales perpendiculares" & vbCrLf & _
+        "  3 = ARBOL (MST)" & vbCrLf & _
+        "        minima longitud total de tuberia", _
+        "Disposicion de tuberias", "1"))
+
+    Select Case topo
+        Case "2": topoName = "Principal + laterales": ConstruirPrincipalLaterales
+        Case "3": topoName = "Arbol de expansion minima (MST)": ConstruirArbolMST
+        Case Else: topoName = "Anillo (looped main)": ConstruirAnillo
+    End Select
+    If gNN < 2 Then Exit Sub
+
+    '======================================================================
+    ' 5) CAUDAL AGUAS ABAJO EN CADA TRAMO (subarbol enraizado en la fuente)
     '======================================================================
     Dim acc() As Double
-    ReDim acc(nP - 1)
-    Dim i As Long
-    For i = 0 To nP - 1
-        acc(i) = pQ(i)
+    ReDim acc(gNN - 1)
+    Dim i As Long, k As Long, nd As Long
+    For i = 0 To gNN - 1
+        acc(i) = gDem(i)
     Next
-    ' orden(0) = fuente; cada nodo se agrego despues de su padre, asi que
-    ' recorriendo en orden inverso el hijo siempre se procesa antes del padre.
-    Dim k As Long, nd As Long
-    For k = nP - 1 To 1 Step -1
-        nd = orden(k)
-        acc(parent(nd)) = acc(parent(nd)) + acc(nd)
+    For k = gNN - 1 To 1 Step -1
+        nd = gOrd(k)
+        acc(gPar(nd)) = acc(gPar(nd)) + acc(nd)
     Next
 
     '======================================================================
-    ' 5b) DIMENSIONAMIENTO POR PRESION (criterio 20%)
-    '     Diametro de cada tramo = segDi(i). Se parte del minimo por
-    '     velocidad y se AGRANDA el tramo mas critico (mayor perdida de
-    '     carga) del camino peor hasta que la variacion de presion del
-    '     sector (perdida acumulada fuente -> emisor mas desfavorable)
-    '     sea <= pctVar% de la presion nominal.
+    ' 6) DIMENSIONAMIENTO POR PRESION (criterio del 20%)
     '======================================================================
     Dim segDi() As Long
-    ReDim segDi(nP - 1)
-    For i = 1 To nP - 1
-        segDi(i) = ElegirDiametro(acc(i), vMax)   ' piso por velocidad
+    ReDim segDi(gNN - 1)
+    For i = 1 To gNN - 1
+        segDi(i) = ElegirDiametro(acc(i), vMax)      ' piso por velocidad
     Next
 
-    Dim admis As Double: admis = pctVar / 100# * pNom     ' variacion admisible (m.c.a.)
-    Dim cumHf() As Double: ReDim cumHf(nP - 1)
+    Dim admis As Double: admis = pctVar / 100# * pNom      ' variacion admisible (m.c.a.)
+    Dim cumHf() As Double: ReDim cumHf(gNN - 1)
     Dim worst As Double, worstNode As Long
-    Dim iterD As Long, nMax As Long: nMax = nP * nDiam + 20
+    Dim iterD As Long, nMax As Long: nMax = gNN * nDiam + 20
 
     For iterD = 1 To nMax
-        ComputarCumHf cumHf, parent, segDi, acc, orden, hwC
+        ComputarCumHf cumHf, segDi, acc, hwC
         worst = 0#: worstNode = -1
-        For i = 1 To nP - 1
+        For i = 1 To gNN - 1
             If cumHf(i) > worst Then worst = cumHf(i): worstNode = i
         Next
         If worst <= admis Or worstNode = -1 Then Exit For
-
         ' agrandar el tramo de mayor perdida en el camino al nodo peor
         Dim best As Long, bestHf As Double, nn As Long, hh As Double
         best = -1: bestHf = -1#
         nn = worstNode
         Do While nn <> 0
             If segDi(nn) < nDiam - 1 Then
-                hh = HfTramo(nn, segDi(nn), parent, acc, hwC)
+                hh = HfTramo(nn, segDi(nn), acc, hwC)
                 If hh > bestHf Then bestHf = hh: best = nn
             End If
-            nn = parent(nn)
+            nn = gPar(nn)
         Loop
-        If best = -1 Then Exit For        ' ya en el maximo del catalogo
+        If best = -1 Then Exit For              ' catalogo agotado
         segDi(best) = segDi(best) + 1
     Next
 
-    ComputarCumHf cumHf, parent, segDi, acc, orden, hwC
+    ComputarCumHf cumHf, segDi, acc, hwC
     worst = 0#
-    For i = 1 To nP - 1
+    For i = 1 To gNN - 1
         If cumHf(i) > worst Then worst = cumHf(i)
     Next
 
     '======================================================================
-    ' 6) DIBUJO DE LA RED  (una polilinea recta por tramo)
+    ' 7) DIBUJO
     '======================================================================
     Dim htxt As Double: htxt = AlturaTexto()
-    Dim usados(0 To 63) As Boolean       ' que diametros se usaron
-    Dim longD(0 To 63) As Double         ' metros por diametro
+    Dim usados(0 To 63) As Boolean
+    Dim longD(0 To 63) As Double
     Dim longTot As Double
-    Dim di As Long, dmm As Double, flujo As Double
 
-    ' --- marcador de la FUENTE (cabezal / valvula) ---
     CrearCapa "RIEGO_FUENTE", 1
     Dim cf(0 To 2) As Double
-    cf(0) = pX(0): cf(1) = pY(0): cf(2) = 0#
+    cf(0) = gNX(0): cf(1) = gNY(0): cf(2) = 0#
     Dim mkr As AcadCircle
     Set mkr = ThisDrawing.ModelSpace.AddCircle(cf, htxt * 1.5)
     mkr.Layer = "RIEGO_FUENTE"
     mkr.color = 1
 
-    For i = 1 To nP - 1
-        flujo = acc(i)
-        di = segDi(i)
-        dmm = gDiam(di)
-
-        Dim L As Double
-        L = Sqr((pX(i) - pX(parent(i))) ^ 2 + (pY(i) - pY(parent(i))) ^ 2)
-        longTot = longTot + L
-        longD(di) = longD(di) + L
-        usados(di) = True
-
-        Dim capa As String
-        capa = "RIEGO_TUB_" & Format(dmm, "0")
-        CrearCapa capa, gDiamColor(di)
-
-        ' --- polilinea del tramo (2 vertices) ---
-        Dim pts(0 To 3) As Double
-        pts(0) = pX(parent(i)): pts(1) = pY(parent(i))
-        pts(2) = pX(i):         pts(3) = pY(i)
-        Dim tub As AcadLWPolyline
-        Set tub = ThisDrawing.ModelSpace.AddLightWeightPolyline(pts)
-        tub.Layer = capa
-        tub.color = gDiamColor(di)
-
-        ' --- rotulo opcional en el punto medio ---
-        If rotular Then
-            RotularTramo pX(parent(i)), pY(parent(i)), pX(i), pY(i), _
-                         dmm, flujo, htxt
-        End If
+    ' tramos del arbol
+    For i = 1 To gNN - 1
+        DibujarTramo gPar(i), i, segDi(i), acc(i), rotular, htxt, _
+                     longTot, longD, usados
+    Next
+    ' aristas extra (cierre del anillo): diametro minimo, caudal ~0
+    For i = 0 To gNEx - 1
+        DibujarTramo gExA(i), gExB(i), 0, 0#, False, htxt, _
+                     longTot, longD, usados
     Next
 
     ThisDrawing.Regen acActiveViewport
 
     '======================================================================
-    ' 7) REPORTE
+    ' 8) REPORTE
     '======================================================================
+    Dim pctReal As Double: pctReal = 100# * worst / pNom
+    Dim veredicto As String
+    If worst <= admis + 0.0000001 Then
+        veredicto = "CUMPLE  (<= " & Format(pctVar, "0") & "%)"
+    Else
+        veredicto = "NO CUMPLE - fraccione el sector / acorte el" & vbCrLf & _
+                    "                   recorrido / use el ANILLO."
+    End If
+
     Dim rep As String
     rep = "TRAZADO DE TUBERIAS COMPLETADO" & vbCrLf & String(46, "-") & vbCrLf & _
-          "Metodo: Arbol de Expansion Minima (Prim) = red de" & vbCrLf & _
-          "menor longitud total que conecta la fuente con" & vbCrLf & _
-          "todos los aspersores, sin bucles." & vbCrLf & vbCrLf & _
+          "Disposicion:            " & topoName & vbCrLf & _
           "Aspersores conectados:  " & (nP - 1) & vbCrLf & _
-          "Tramos de tuberia:      " & (nP - 1) & vbCrLf & _
+          "Tramos de tuberia:      " & (gNN - 1 + gNEx) & vbCrLf & _
           "Longitud TOTAL de red:  " & Format(longTot, "0.00") & " m" & vbCrLf & _
           "Velocidad maxima:       " & Format(vMax, "0.0") & " m/s" & vbCrLf & vbCrLf & _
           "LONGITUD POR DIAMETRO:" & vbCrLf
@@ -307,29 +277,18 @@ Public Sub TrazadoTuberias()
                   Format(longD(i), "0.00") & " m" & vbCrLf
         End If
     Next
-    Dim pctReal As Double: pctReal = 100# * worst / pNom
-    Dim veredicto As String
-    If worst <= admis + 0.0000001 Then
-        veredicto = "CUMPLE  (<= " & Format(pctVar, "0") & "%)"
-    Else
-        veredicto = "NO CUMPLE - revise (fraccione el sector / acorte" & vbCrLf & _
-                    "                   el recorrido / suba diametros mayores)"
-    End If
-
     rep = rep & vbCrLf & _
           "Caudal total en la fuente: " & Format(acc(0), "0.0") & " l/min" & vbCrLf & vbCrLf & _
           "CRITERIO DE PRESION (mejor practica de riego):" & vbCrLf & _
-          "  Presion nominal:        " & Format(pNom, "0.0") & " m.c.a." & vbCrLf & _
-          "  Variacion admisible:    " & Format(pctVar, "0") & " %  = " & _
+          "  Presion nominal:      " & Format(pNom, "0.0") & " m.c.a." & vbCrLf & _
+          "  Variacion admisible:  " & Format(pctVar, "0") & " % = " & _
                 Format(admis, "0.00") & " m.c.a." & vbCrLf & _
           "  Perdida en el emisor mas desfavorable:" & vbCrLf & _
-          "                          " & Format(worst, "0.00") & " m.c.a. (" & _
+          "                        " & Format(worst, "0.00") & " m.c.a. (" & _
                 Format(pctReal, "0.0") & " % de la nominal)" & vbCrLf & _
-          "  Estado:                 " & veredicto & vbCrLf & vbCrLf & _
-          "(Perdidas por friccion Hazen-Williams, C=" & Format(hwC, "0") & _
-          "; no incluye desnivel." & vbCrLf & _
-          "Cada tramo en capa RIEGO_TUB_<diametro>; DATAEXTRACTION" & vbCrLf & _
-          "por capa da los metros por diametro para el presupuesto.)"
+          "  Estado:               " & veredicto & vbCrLf & vbCrLf & _
+          "(Friccion Hazen-Williams C=" & Format(hwC, "0") & "; sin desnivel." & vbCrLf & _
+          "Metros por diametro con DATAEXTRACTION por capa.)"
     MsgBox rep, vbInformation, "Trazado de tuberias"
     Exit Sub
 
@@ -339,8 +298,199 @@ errH:
 End Sub
 
 '==============================================================================
+' CONSTRUCTORES DE LA RED (cada uno llena gNX/gNY/gDem/gPar/gOrd/gNN y gEx*)
+'==============================================================================
+
+'--- 3) ARBOL DE EXPANSION MINIMA (Prim) -------------------------------------
+Private Sub ConstruirArbolMST()
+    gNN = nP
+    ReDim gNX(gNN - 1): ReDim gNY(gNN - 1): ReDim gDem(gNN - 1)
+    ReDim gPar(gNN - 1): ReDim gOrd(gNN - 1)
+    Dim i As Long
+    For i = 0 To nP - 1
+        gNX(i) = pX(i): gNY(i) = pY(i): gDem(i) = pQ(i)
+    Next
+    Prim gPar, gOrd          ' usa pX/pY/nP; llena gPar/gOrd
+    gPar(0) = -1
+    gNEx = 0
+End Sub
+
+'--- 1) ANILLO (looped main) -------------------------------------------------
+' Cadena perimetral por vecino mas cercano; la fuente alimenta el nodo mas
+' proximo; el caudal se reparte en dos ramas que se encuentran en el "punto
+' neutro" (donde la demanda acumulada de cada lado se equilibra); el tramo de
+' cierre entre ambas ramas se dibuja aparte y transporta ~0.
+Private Sub ConstruirAnillo()
+    Dim ns As Long: ns = nP - 1
+    If ns < 3 Then ConstruirArbolMST: Exit Sub
+
+    Dim chain() As Long: ReDim chain(ns - 1)
+    Dim used() As Boolean: ReDim used(nP - 1)
+    Dim i As Long, j As Long, start As Long, dmin As Double, d As Double
+
+    start = 1: dmin = 1E+30
+    For j = 1 To nP - 1
+        d = (pX(0) - pX(j)) ^ 2 + (pY(0) - pY(j)) ^ 2
+        If d < dmin Then dmin = d: start = j
+    Next
+    chain(0) = start: used(start) = True
+    Dim cur As Long: cur = start
+    Dim nc As Long: nc = 1
+    Do While nc < ns
+        Dim nxt As Long: nxt = -1: dmin = 1E+30
+        For j = 1 To nP - 1
+            If Not used(j) Then
+                d = (pX(cur) - pX(j)) ^ 2 + (pY(cur) - pY(j)) ^ 2
+                If d < dmin Then dmin = d: nxt = j
+            End If
+        Next
+        chain(nc) = nxt: used(nxt) = True: cur = nxt: nc = nc + 1
+    Loop
+
+    ' punto neutro por equilibrio de demanda (o por conteo si no hay caudal)
+    Dim D As Double: D = 0#
+    For i = 0 To ns - 1: D = D + pQ(chain(i)): Next
+    Dim m As Long
+    If D <= 0# Then
+        m = ns \ 2
+    Else
+        Dim cum As Double: cum = 0#: m = 0
+        For i = 1 To ns - 1
+            cum = cum + pQ(chain(i))
+            If cum >= D / 2# Then m = i: Exit For
+        Next
+        If m = 0 Then m = ns \ 2
+    End If
+    If m < 1 Then m = 1
+    If m > ns - 2 Then m = ns - 2
+
+    gNN = nP
+    ReDim gNX(gNN - 1): ReDim gNY(gNN - 1): ReDim gDem(gNN - 1)
+    ReDim gPar(gNN - 1): ReDim gOrd(gNN - 1)
+    For i = 0 To nP - 1
+        gNX(i) = pX(i): gNY(i) = pY(i): gDem(i) = pQ(i)
+    Next
+    gPar(0) = -1
+    gPar(chain(0)) = 0                       ' alimentador fuente -> nodo de entrada
+    For i = 1 To m                           ' rama adelante
+        gPar(chain(i)) = chain(i - 1)
+    Next
+    gPar(chain(ns - 1)) = chain(0)           ' rama atras
+    For i = ns - 2 To m + 1 Step -1
+        gPar(chain(i)) = chain(i + 1)
+    Next
+
+    gNEx = 1                                 ' cierre del anillo (~0 de caudal)
+    ReDim gExA(0): ReDim gExB(0)
+    gExA(0) = chain(m): gExB(0) = chain(m + 1)
+
+    OrdenarArbol
+End Sub
+
+'--- 2) PRINCIPAL + LATERALES ------------------------------------------------
+' Eje dominante = recta entre los dos aspersores mas alejados. La troncal
+' pasa por la fuente en esa direccion; cada aspersor se conecta con un lateral
+' perpendicular a un nodo de union (tee) sobre la troncal.
+Private Sub ConstruirPrincipalLaterales()
+    Dim ns As Long: ns = nP - 1
+    If ns < 2 Then ConstruirArbolMST: Exit Sub
+
+    Dim i As Long, j As Long, a As Long, b As Long, dmax As Double, d As Double
+    a = 1: b = 1: dmax = -1#
+    For i = 1 To nP - 1
+        For j = i + 1 To nP - 1
+            d = (pX(i) - pX(j)) ^ 2 + (pY(i) - pY(j)) ^ 2
+            If d > dmax Then dmax = d: a = i: b = j
+        Next
+    Next
+    Dim ux As Double, uy As Double, ln As Double
+    ux = pX(b) - pX(a): uy = pY(b) - pY(a)
+    ln = Sqr(ux * ux + uy * uy)
+    If ln < 0.000001 Then
+        ux = 1#: uy = 0#
+    Else
+        ux = ux / ln: uy = uy / ln
+    End If
+
+    ' nodos: 0..nP-1 (fuente+aspersores) ; nP..nP+ns-1 (uniones, una por aspersor)
+    gNN = nP + ns
+    ReDim gNX(gNN - 1): ReDim gNY(gNN - 1): ReDim gDem(gNN - 1)
+    ReDim gPar(gNN - 1): ReDim gOrd(gNN - 1)
+    For i = 0 To nP - 1
+        gNX(i) = pX(i): gNY(i) = pY(i): gDem(i) = pQ(i)
+    Next
+
+    Dim t() As Double: ReDim t(nP - 1)
+    t(0) = 0#
+    For i = 1 To nP - 1
+        t(i) = (pX(i) - pX(0)) * ux + (pY(i) - pY(0)) * uy      ' proyeccion sobre el eje
+        Dim jn As Long: jn = nP + (i - 1)
+        gNX(jn) = pX(0) + t(i) * ux
+        gNY(jn) = pY(0) + t(i) * uy
+        gDem(jn) = 0#
+    Next
+
+    ' ordenar aspersores por t (insercion)
+    Dim ord() As Long: ReDim ord(ns - 1)
+    For i = 0 To ns - 1: ord(i) = i + 1: Next
+    Dim p As Long, q As Long, tmp As Long
+    For p = 1 To ns - 1
+        tmp = ord(p): q = p - 1
+        Do While q >= 0
+            If t(ord(q)) > t(tmp) Then
+                ord(q + 1) = ord(q): q = q - 1
+            Else
+                Exit Do
+            End If
+        Loop
+        ord(q + 1) = tmp
+    Next
+
+    ' troncal desde la fuente hacia t>=0 (ascendente) y hacia t<0 (descendente)
+    Dim prevR As Long: prevR = 0
+    For p = 0 To ns - 1
+        If t(ord(p)) >= 0# Then
+            Dim s As Long: s = ord(p)
+            Dim jr As Long: jr = nP + (s - 1)
+            gPar(jr) = prevR
+            gPar(s) = jr
+            prevR = jr
+        End If
+    Next
+    Dim prevL As Long: prevL = 0
+    For p = ns - 1 To 0 Step -1
+        If t(ord(p)) < 0# Then
+            Dim s2 As Long: s2 = ord(p)
+            Dim jl As Long: jl = nP + (s2 - 1)
+            gPar(jl) = prevL
+            gPar(s2) = jl
+            prevL = jl
+        End If
+    Next
+
+    gPar(0) = -1
+    gNEx = 0
+    OrdenarArbol
+End Sub
+
+'--- Orden topologico (BFS desde la raiz 0): padre antes que hijo -------------
+Private Sub OrdenarArbol()
+    Dim cnt As Long, h As Long, cur As Long, j As Long
+    gOrd(0) = 0
+    cnt = 1: h = 0
+    Do While h < cnt
+        cur = gOrd(h)
+        For j = 1 To gNN - 1
+            If gPar(j) = cur Then
+                gOrd(cnt) = j: cnt = cnt + 1
+            End If
+        Next
+        h = h + 1
+    Loop
+End Sub
+
+'==============================================================================
 ' ALGORITMO DE PRIM  (arbol de expansion minima, metrica euclidiana)
-'   O(n^2): adecuado para cientos/miles de aspersores.
 '==============================================================================
 Private Sub Prim(ByRef parent() As Long, ByRef orden() As Long)
     Dim enArbol() As Boolean
@@ -353,127 +503,88 @@ Private Sub Prim(ByRef parent() As Long, ByRef orden() As Long)
         best(i) = 1E+30
         parent(i) = 0
     Next
-
-    ' Nodo inicial = fuente (0)
     best(0) = 0#
     Dim nAdd As Long: nAdd = 0
 
     For i = 0 To nP - 1
-        ' elegir el nodo no incluido con menor distancia al arbol
         Dim u As Long, mejor As Double
         u = -1: mejor = 1E+30
         For j = 0 To nP - 1
             If Not enArbol(j) Then
-                If best(j) < mejor Then
-                    mejor = best(j)
-                    u = j
-                End If
+                If best(j) < mejor Then mejor = best(j): u = j
             End If
         Next
         If u = -1 Then Exit For
-
         enArbol(u) = True
-        orden(nAdd) = u
-        nAdd = nAdd + 1
-
-        ' actualizar distancias de los nodos restantes hacia u
+        orden(nAdd) = u: nAdd = nAdd + 1
         For j = 0 To nP - 1
             If Not enArbol(j) Then
                 Dim d As Double
-                d = (pX(j) - pX(u)) ^ 2 + (pY(j) - pY(u)) ^ 2   ' cuadrado: basta para comparar
-                If d < best(j) Then
-                    best(j) = d
-                    parent(j) = u
-                End If
+                d = (pX(j) - pX(u)) ^ 2 + (pY(j) - pY(u)) ^ 2
+                If d < best(j) Then best(j) = d: parent(j) = u
             End If
         Next
+    Next
+End Sub
+
+'==============================================================================
+' HIDRAULICA
+'==============================================================================
+' Perdida de carga de un tramo (Hazen-Williams), m.c.a.
+'   hf = 10.67 * L * Q^1.852 / ( C^1.852 * D^4.871 )   [Q m3/s, D m, L m]
+'   El tramo que alimenta al nodo i lleva el caudal acc(i).
+Private Function HfTramo(i As Long, di As Long, acc() As Double, hwC As Double) As Double
+    Dim Q As Double: Q = acc(i)
+    If Q <= 0# Then Exit Function
+    Dim L As Double, Dm As Double, Qm As Double
+    L = Sqr((gNX(i) - gNX(gPar(i))) ^ 2 + (gNY(i) - gNY(gPar(i))) ^ 2)
+    Dm = gDiam(di) / 1000#
+    Qm = Q / 60000#
+    HfTramo = 10.67 * L * (Qm ^ 1.852) / ((hwC ^ 1.852) * (Dm ^ 4.871))
+End Function
+
+' Perdida acumulada desde la fuente a cada nodo (recorriendo el orden topol.)
+Private Sub ComputarCumHf(ByRef cumHf() As Double, segDi() As Long, _
+                          acc() As Double, hwC As Double)
+    Dim k As Long, nd As Long
+    cumHf(0) = 0#
+    For k = 1 To gNN - 1
+        nd = gOrd(k)
+        cumHf(nd) = cumHf(gPar(nd)) + HfTramo(nd, segDi(nd), acc, hwC)
     Next
 End Sub
 
 '==============================================================================
 ' DIMENSIONAMIENTO: menor diametro comercial que cumple la velocidad maxima.
-'   Q(l/min) -> m3/s: Q/60000 ;  v = Qm3s / (PI*d^2/4)  con d en metros.
-'   d_min = raiz( 4*Qm3s / (PI*vMax) ).
 '==============================================================================
 Private Function ElegirDiametro(caudalLmin As Double, vMax As Double) As Long
-    Dim qm3s As Double, dMin As Double, dm As Double, k As Long
-    If caudalLmin <= 0# Then
-        ElegirDiametro = 0                     ' sin caudal: el menor
-        Exit Function
-    End If
+    Dim qm3s As Double, dMin As Double, k As Long
+    If caudalLmin <= 0# Then ElegirDiametro = 0: Exit Function
     qm3s = caudalLmin / 60000#
-    dMin = Sqr(4# * qm3s / (PI * vMax)) * 1000#   ' en mm
+    dMin = Sqr(4# * qm3s / (PI * vMax)) * 1000#
     For k = 0 To nDiam - 1
-        If gDiam(k) >= dMin - 0.000001 Then
-            ElegirDiametro = k
-            Exit Function
-        End If
+        If gDiam(k) >= dMin - 0.000001 Then ElegirDiametro = k: Exit Function
     Next
-    ElegirDiametro = nDiam - 1                  ' supera el catalogo: el mayor
+    ElegirDiametro = nDiam - 1
 End Function
 
-'==============================================================================
-' PERDIDA DE CARGA de un tramo (Hazen-Williams), en m.c.a.
-'   hf = 10.67 * L * Q^1.852 / ( C^1.852 * D^4.871 )   [Q m3/s, D m, L m]
-'   El tramo que alimenta al nodo i lleva el caudal acc(i).
-'==============================================================================
-Private Function HfTramo(i As Long, di As Long, parent() As Long, _
-                         acc() As Double, hwC As Double) As Double
-    Dim Q As Double
-    Q = acc(i)
-    If Q <= 0# Then Exit Function
-    Dim L As Double, Dm As Double, Qm As Double
-    L = Sqr((pX(i) - pX(parent(i))) ^ 2 + (pY(i) - pY(parent(i))) ^ 2)
-    Dm = gDiam(di) / 1000#            ' mm -> m
-    Qm = Q / 60000#                   ' l/min -> m3/s
-    HfTramo = 10.67 * L * (Qm ^ 1.852) / ((hwC ^ 1.852) * (Dm ^ 4.871))
-End Function
-
-'==============================================================================
-' Perdida de carga ACUMULADA desde la fuente hasta cada nodo.
-'   Se recorre en el orden de descubrimiento (padre antes que hijo).
-'==============================================================================
-Private Sub ComputarCumHf(ByRef cumHf() As Double, parent() As Long, _
-                          segDi() As Long, acc() As Double, _
-                          orden() As Long, hwC As Double)
-    Dim k As Long, nd As Long
-    cumHf(0) = 0#
-    For k = 1 To nP - 1
-        nd = orden(k)
-        cumHf(nd) = cumHf(parent(nd)) + HfTramo(nd, segDi(nd), parent, acc, hwC)
-    Next
-End Sub
-
-'==============================================================================
-' CATALOGO DE DIAMETROS COMERCIALES (mm) Y COLOR ASOCIADO
-'==============================================================================
 Private Sub CargarCatalogoDiametros()
     Dim dd As Variant, cc As Variant, i As Long
     dd = Array(16#, 20#, 25#, 32#, 40#, 50#, 63#, 75#, 90#, 110#)
-    '            azul verde cian rojo mag amar 30  5   40  1
     cc = Array(5, 3, 4, 1, 6, 2, 30, 8, 40, 200)
     nDiam = UBound(dd) + 1
-    ReDim gDiam(nDiam - 1)
-    ReDim gDiamColor(nDiam - 1)
+    ReDim gDiam(nDiam - 1): ReDim gDiamColor(nDiam - 1)
     For i = 0 To nDiam - 1
-        gDiam(i) = CDbl(dd(i))
-        gDiamColor(i) = CLng(cc(i))
+        gDiam(i) = CDbl(dd(i)): gDiamColor(i) = CLng(cc(i))
     Next
 End Sub
 
 '==============================================================================
-' RECOLECCION AUTOMATICA de TODOS los aspersores colocados.
-'   Segun modDisenoAspersion, cada aspersor es un BLOQUE con:
-'     - nombre "ASPERSOR_RIEGO_V*"  (contiene "ASPERSOR"), y/o
-'     - capa "RIEGO_ASPERSOR",       y/o
-'     - atributo NUM / CAUDAL.
-'   Se acepta si cumple CUALQUIERA de esas senales (robusto ante cambios de
-'   version o de nombre). Lee INSERTIONPOINT y atributos CAUDAL / NUM / ZONA.
+' DETECCION DE ASPERSORES
 '==============================================================================
 Private Sub RecolectarAspersores()
     ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255): ReDim pZona(255)
     nP = 0
-
     Dim ent As AcadEntity, br As AcadBlockReference
     Dim nombre As String, capa As String, esAspersor As Boolean
     For Each ent In ThisDrawing.ModelSpace
@@ -485,15 +596,11 @@ Private Sub RecolectarAspersores()
             If nombre = "" Then nombre = br.Name
             capa = br.Layer
             On Error GoTo 0
-
             esAspersor = (InStr(1, UCase$(nombre), "ASPERSOR", vbTextCompare) > 0)
-            If Not esAspersor Then
+            If Not esAspersor Then _
                 esAspersor = (InStr(1, UCase$(capa), "RIEGO_ASPERSOR", vbTextCompare) > 0)
-            End If
-            If Not esAspersor Then
+            If Not esAspersor Then _
                 esAspersor = TieneAtributo(br, "NUM") Or TieneAtributo(br, "CAUDAL")
-            End If
-
             If esAspersor Then
                 Dim ip As Variant: ip = br.InsertionPoint
                 AgregarPunto CDbl(ip(0)), CDbl(ip(1)), _
@@ -505,43 +612,71 @@ Private Sub RecolectarAspersores()
     Next
 End Sub
 
-'------------------------------------------------------------------------------
-' Verdadero si el bloque tiene un atributo con ese TAG.
-'------------------------------------------------------------------------------
 Private Function TieneAtributo(br As AcadBlockReference, tag As String) As Boolean
     On Error Resume Next
     Dim atts As Variant, i As Long
     If br.HasAttributes Then
         atts = br.GetAttributes
         For i = LBound(atts) To UBound(atts)
-            If UCase$(atts(i).TagString) = UCase$(tag) Then
-                TieneAtributo = True
-                Exit Function
-            End If
+            If UCase$(atts(i).TagString) = UCase$(tag) Then TieneAtributo = True: Exit Function
         Next
     End If
 End Function
 
-'------------------------------------------------------------------------------
-' Devuelve el texto del atributo cuyo TAG coincide (o "" si no existe).
-'------------------------------------------------------------------------------
 Private Function AtributoBloque(br As AcadBlockReference, tag As String) As String
     On Error Resume Next
     Dim atts As Variant, i As Long
     If br.HasAttributes Then
         atts = br.GetAttributes
         For i = LBound(atts) To UBound(atts)
-            If UCase$(atts(i).TagString) = UCase$(tag) Then
-                AtributoBloque = atts(i).TextString
-                Exit Function
-            End If
+            If UCase$(atts(i).TagString) = UCase$(tag) Then _
+                AtributoBloque = atts(i).TextString: Exit Function
         Next
     End If
 End Function
 
-'==============================================================================
-' SELECCION MANUAL (respaldo): bloques, circulos o puntos.
-'==============================================================================
+Private Sub ContarEntidades(ByRef nBlk As Long, ByRef nCir As Long, ByRef nPnt As Long)
+    Dim ent As AcadEntity
+    nBlk = 0: nCir = 0: nPnt = 0
+    For Each ent In ThisDrawing.ModelSpace
+        If TypeOf ent Is AcadBlockReference Then
+            nBlk = nBlk + 1
+        ElseIf TypeOf ent Is AcadCircle Then
+            nCir = nCir + 1
+        ElseIf TypeOf ent Is AcadPoint Then
+            nPnt = nPnt + 1
+        End If
+    Next
+End Sub
+
+Private Sub ColectarBloques()
+    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255): ReDim pZona(255)
+    nP = 0
+    Dim ent As AcadEntity, br As AcadBlockReference, ip As Variant
+    For Each ent In ThisDrawing.ModelSpace
+        If TypeOf ent Is AcadBlockReference Then
+            Set br = ent
+            ip = br.InsertionPoint
+            AgregarPunto CDbl(ip(0)), CDbl(ip(1)), _
+                         Val(AtributoBloque(br, "CAUDAL")), _
+                         AtributoBloque(br, "NUM"), _
+                         UCase$(Trim$(AtributoBloque(br, "ZONA")))
+        End If
+    Next
+End Sub
+
+Private Sub ColectarCirculos()
+    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255): ReDim pZona(255)
+    nP = 0
+    Dim ent As AcadEntity, ip As Variant
+    For Each ent In ThisDrawing.ModelSpace
+        If TypeOf ent Is AcadCircle Then
+            ip = ent.Center
+            AgregarPunto CDbl(ip(0)), CDbl(ip(1)), 0#, ""
+        End If
+    Next
+End Sub
+
 Private Function SeleccionManual() As Boolean
     On Error Resume Next
     Dim ss As AcadSelectionSet
@@ -556,7 +691,6 @@ Private Function SeleccionManual() As Boolean
 
     ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255): ReDim pZona(255)
     nP = 0
-
     Dim ent As AcadEntity, ip As Variant
     For Each ent In ss
         If TypeOf ent Is AcadBlockReference Then
@@ -577,19 +711,14 @@ Private Function SeleccionManual() As Boolean
             ip = ent.Coordinates
             AgregarPunto CDbl(ip(0)), CDbl(ip(1)), 0#, ""
         Else
-            ' cualquier otra entidad: centro de su caja delimitadora
             Dim x As Double, y As Double
             If CentroEntidad(ent, x, y) Then AgregarPunto x, y, 0#, ""
         End If
     Next
-
     ss.Delete
     SeleccionManual = (nP > 0)
 End Function
 
-'------------------------------------------------------------------------------
-' Centro de la caja delimitadora de una entidad (respaldo universal).
-'------------------------------------------------------------------------------
 Private Function CentroEntidad(ent As AcadEntity, ByRef x As Double, ByRef y As Double) As Boolean
     On Error GoTo fin
     Dim lo As Variant, hi As Variant
@@ -601,60 +730,7 @@ fin:
 End Function
 
 '==============================================================================
-' DIAGNOSTICO: cuenta entidades por tipo en el espacio modelo.
-'==============================================================================
-Private Sub ContarEntidades(ByRef nBlk As Long, ByRef nCir As Long, ByRef nPnt As Long)
-    Dim ent As AcadEntity
-    nBlk = 0: nCir = 0: nPnt = 0
-    For Each ent In ThisDrawing.ModelSpace
-        If TypeOf ent Is AcadBlockReference Then
-            nBlk = nBlk + 1
-        ElseIf TypeOf ent Is AcadCircle Then
-            nCir = nCir + 1
-        ElseIf TypeOf ent Is AcadPoint Then
-            nPnt = nPnt + 1
-        End If
-    Next
-End Sub
-
-'==============================================================================
-' COLECTA TODOS LOS BLOQUES (cualquier nombre) como aspersores.
-'==============================================================================
-Private Sub ColectarBloques()
-    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255): ReDim pZona(255)
-    nP = 0
-    Dim ent As AcadEntity, br As AcadBlockReference, ip As Variant
-    For Each ent In ThisDrawing.ModelSpace
-        If TypeOf ent Is AcadBlockReference Then
-            Set br = ent
-            ip = br.InsertionPoint
-            AgregarPunto CDbl(ip(0)), CDbl(ip(1)), _
-                         Val(AtributoBloque(br, "CAUDAL")), _
-                         AtributoBloque(br, "NUM"), _
-                         UCase$(Trim$(AtributoBloque(br, "ZONA")))
-        End If
-    Next
-End Sub
-
-'==============================================================================
-' COLECTA TODOS LOS CIRCULOS como aspersores (por su centro).
-'==============================================================================
-Private Sub ColectarCirculos()
-    ReDim pX(255): ReDim pY(255): ReDim pQ(255): ReDim pNum(255): ReDim pZona(255)
-    nP = 0
-    Dim ent As AcadEntity, ip As Variant
-    For Each ent In ThisDrawing.ModelSpace
-        If TypeOf ent Is AcadCircle Then
-            ip = ent.Center
-            AgregarPunto CDbl(ip(0)), CDbl(ip(1)), 0#, ""
-        End If
-    Next
-End Sub
-
-'==============================================================================
-' FILTRO POR ZONA: solo actua si hay VARIAS zonas distintas presentes.
-' Lista las zonas reales y deja elegir una (o todas). Evita descartar todo
-' por un nombre de zona mal escrito.  Se llama ANTES de insertar la fuente.
+' FILTRO POR ZONA (solo si hay varias zonas distintas)
 '==============================================================================
 Private Sub FiltrarPorZona()
     Dim zonas(63) As String, nz As Long
@@ -666,18 +742,13 @@ Private Sub FiltrarPorZona()
             For j = 0 To nz - 1
                 If zonas(j) = pZona(i) Then existe = True
             Next
-            If Not existe And nz < 64 Then
-                zonas(nz) = pZona(i)
-                nz = nz + 1
-            End If
+            If Not existe And nz < 64 Then zonas(nz) = pZona(i): nz = nz + 1
         End If
     Next
-    If nz <= 1 Then Exit Sub          ' 0 o 1 zona: no hay nada que elegir
+    If nz <= 1 Then Exit Sub
 
     Dim lista As String
-    For i = 0 To nz - 1
-        lista = lista & "   " & zonas(i) & vbCrLf
-    Next
+    For i = 0 To nz - 1: lista = lista & "   " & zonas(i) & vbCrLf: Next
     Dim sel As String
     sel = UCase$(Trim$(InputBox( _
         "Hay aspersores de varias ZONAS / VALVULAS:" & vbCrLf & lista & vbCrLf & _
@@ -694,8 +765,7 @@ Private Sub FiltrarPorZona()
         End If
     Next
     nP = k
-    If nP = 0 Then _
-        MsgBox "Ningun aspersor tiene la zona '" & sel & "'.", vbExclamation
+    If nP = 0 Then MsgBox "Ningun aspersor tiene la zona '" & sel & "'.", vbExclamation
 End Sub
 
 '==============================================================================
@@ -703,7 +773,6 @@ End Sub
 '==============================================================================
 Private Sub AgregarPunto(x As Double, y As Double, q As Double, num As String, _
                          Optional zona As String = "")
-    ' evita duplicados exactos (mismo aspersor contado dos veces)
     Dim i As Long
     For i = 0 To nP - 1
         If Abs(pX(i) - x) < 0.000001 And Abs(pY(i) - y) < 0.000001 Then Exit Sub
@@ -719,7 +788,6 @@ Private Sub AgregarPunto(x As Double, y As Double, q As Double, num As String, _
     nP = nP + 1
 End Sub
 
-' Inserta la fuente como nodo 0, desplazando el resto una posicion.
 Private Sub InsertarFuente(x As Double, y As Double)
     If nP > UBound(pX) Then
         ReDim Preserve pX(UBound(pX) + 256)
@@ -738,23 +806,45 @@ Private Sub InsertarFuente(x As Double, y As Double)
 End Sub
 
 '==============================================================================
-' ROTULO DE UN TRAMO (diametro y caudal) en su punto medio
+' DIBUJO Y UTILIDADES
 '==============================================================================
+Private Sub DibujarTramo(a As Long, b As Long, di As Long, flujo As Double, _
+                         rotular As Boolean, htxt As Double, _
+                         ByRef longTot As Double, ByRef longD() As Double, _
+                         ByRef usados() As Boolean)
+    Dim L As Double
+    L = Sqr((gNX(b) - gNX(a)) ^ 2 + (gNY(b) - gNY(a)) ^ 2)
+    If L < 0.000000001 Then Exit Sub          ' tramo nulo (union sobre la fuente)
+    Dim dmm As Double: dmm = gDiam(di)
+    longTot = longTot + L
+    longD(di) = longD(di) + L
+    usados(di) = True
+
+    Dim capa As String: capa = "RIEGO_TUB_" & Format(dmm, "0")
+    CrearCapa capa, gDiamColor(di)
+
+    Dim pts(0 To 3) As Double
+    pts(0) = gNX(a): pts(1) = gNY(a)
+    pts(2) = gNX(b): pts(3) = gNY(b)
+    Dim tub As AcadLWPolyline
+    Set tub = ThisDrawing.ModelSpace.AddLightWeightPolyline(pts)
+    tub.Layer = capa
+    tub.color = gDiamColor(di)
+
+    If rotular Then RotularTramo gNX(a), gNY(a), gNX(b), gNY(b), dmm, flujo, htxt
+End Sub
+
 Private Sub RotularTramo(x1 As Double, y1 As Double, x2 As Double, y2 As Double, _
                          dmm As Double, caudal As Double, h As Double)
     CrearCapa "RIEGO_TUB_TXT", 8
     Dim mx As Double, my As Double, ang As Double
     mx = (x1 + x2) / 2#: my = (y1 + y2) / 2#
-
     Dim ins(0 To 2) As Double
     ins(0) = mx: ins(1) = my + h * 0.4: ins(2) = 0#
-
     Dim txt As AcadText
     Set txt = ThisDrawing.ModelSpace.AddText( _
         "D" & Format(dmm, "0") & " (" & Format(caudal, "0.0") & " l/min)", ins, h)
     txt.Layer = "RIEGO_TUB_TXT"
-
-    ' orienta el texto a lo largo del tramo (legible)
     ang = Atan2(y2 - y1, x2 - x1)
     If ang > PI / 2# Then ang = ang - PI
     If ang < -PI / 2# Then ang = ang + PI
@@ -762,20 +852,16 @@ Private Sub RotularTramo(x1 As Double, y1 As Double, x2 As Double, y2 As Double,
     txt.Alignment = acAlignmentLeft
 End Sub
 
-'==============================================================================
-' UTILIDADES DE DIBUJO
-'==============================================================================
 Private Function AlturaTexto() As Double
     Dim xmn As Double, xmx As Double, ymn As Double, ymx As Double, i As Long
-    xmn = pX(0): xmx = pX(0): ymn = pY(0): ymx = pY(0)
-    For i = 1 To nP - 1
-        If pX(i) < xmn Then xmn = pX(i)
-        If pX(i) > xmx Then xmx = pX(i)
-        If pY(i) < ymn Then ymn = pY(i)
-        If pY(i) > ymx Then ymx = pY(i)
+    xmn = gNX(0): xmx = gNX(0): ymn = gNY(0): ymx = gNY(0)
+    For i = 1 To gNN - 1
+        If gNX(i) < xmn Then xmn = gNX(i)
+        If gNX(i) > xmx Then xmx = gNX(i)
+        If gNY(i) < ymn Then ymn = gNY(i)
+        If gNY(i) > ymx Then ymx = gNY(i)
     Next
-    Dim diag As Double
-    diag = Sqr((xmx - xmn) ^ 2 + (ymx - ymn) ^ 2)
+    Dim diag As Double: diag = Sqr((xmx - xmn) ^ 2 + (ymx - ymn) ^ 2)
     If diag <= 0# Then diag = 10#
     AlturaTexto = diag * 0.012
 End Function

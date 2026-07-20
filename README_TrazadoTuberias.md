@@ -1,49 +1,59 @@
 # modTrazadoTuberias — Trazado de tuberías de riego (VBA AutoCAD)
 
-Complemento de `modDisenoAspersion` (distribución de aspersores). Traza la red
-de tuberías que conecta **todos los aspersores** con un punto de **fuente**
-(cabezal/válvula) usando **polilíneas**, con la **menor longitud total posible**.
+Complemento de `modDisenoAspersion`. Traza la red de tuberías que conecta los
+aspersores con un punto de **fuente** (cabezal/válvula) usando **polilíneas**,
+y la dimensiona según las mejores prácticas de riego.
 
-## ¿Por qué es lo más eficiente posible?
+## Disposiciones (el usuario elige al ejecutar)
 
-Conectar N puntos con tubería, sin bucles (un árbol), gastando la menor
-cantidad de tubería, es el problema del **Árbol de Expansión Mínima (MST)**.
-El módulo lo resuelve con el algoritmo de **Prim**, que devuelve el árbol
-**óptimo** (de longitud total mínima), no una aproximación.
+1. **Anillo (looped main)** — recomendado para aspersores en perímetro. Cierra
+   el perímetro en un bucle alimentado desde la fuente; el caudal se reparte en
+   dos ramas que se encuentran en el *punto neutro* → menor fricción y **presión
+   más uniforme**. El tramo de cierre transporta ~0.
+2. **Principal + laterales** — troncal a lo largo del eje dominante (los dos
+   aspersores más alejados) con **laterales perpendiculares** a cada aspersor.
+   Pocos emisores en serie por lateral.
+3. **Árbol (MST, Prim)** — mínima longitud total de tubería (menor material).
 
-Además dimensiona la red:
+## Criterio hidráulico (regla del 20%)
 
-- Enraíza el árbol en la fuente y calcula el **caudal aguas abajo** de cada
-  tramo (suma de los caudales de los aspersores que dependen de él).
-- Elige el **diámetro comercial más pequeño** que respeta una **velocidad
-  máxima** (por defecto 1.5 m/s) → la red más económica que cumple el criterio.
-- Cada tramo se dibuja en una capa por diámetro (`RIEGO_TUB_16`, `_20`, …) y
-  opcionalmente se rotula con diámetro y caudal.
+En diseño de riego la variación de presión dentro del sector no debe superar
+~20% de la presión nominal del emisor. El módulo:
+
+- Calcula la **pérdida de carga Hazen-Williams** en cada tramo con el caudal
+  acumulado aguas abajo.
+- Dimensiona el diámetro de cada tramo partiendo del **mínimo por velocidad** y
+  **agranda el tramo más crítico** del camino peor hasta que la variación de
+  presión ≤ % admisible (configurable, por defecto 20%).
+- El reporte indica la pérdida en el emisor más desfavorable, su % de la
+  nominal y **CUMPLE / NO CUMPLE**.
 
 ## Uso
 
-1. Ejecuta primero `modDisenoAspersion` para colocar los aspersores (o ten los
-   bloques `ASPERSOR_RIEGO_*` en el dibujo).
-2. Importa `modTrazadoTuberias.bas` en el Editor de VBA (Alt+F11 → Archivo →
-   Importar), o pégalo en un módulo nuevo.
-3. Ejecuta la macro **`TrazadoTuberias`**:
-   - (Opcional) Escribe una **ZONA** para trazar solo esa válvula; vacío = todos.
-   - Indica con el mouse el **punto de fuente** (cabezal/válvula).
-   - Ingresa la **velocidad máxima** (Enter = 1.5 m/s).
-   - Elige si **rotular** los tramos (S/N).
+1. Coloca los aspersores con `modDisenoAspersion` (bloques `ASPERSOR_RIEGO_*`).
+2. Importa `modTrazadoTuberias.bas` en el editor VBA (Alt+F11 → Importar).
+3. Ejecuta **`TrazadoTuberias`**:
+   - Confirma los aspersores detectados.
+   - Indica el **punto de fuente**.
+   - Velocidad máx (1.5), presión nominal (m.c.a.), % admisible (20), C (150).
+   - Elige **disposición** (1=Anillo, 2=Principal+laterales, 3=MST).
+   - Rótulos S/N.
 
 ## Salida
 
-- Polilíneas de tubería en capas `RIEGO_TUB_<diámetro>` (color por diámetro).
-- Rótulos opcionales en `RIEGO_TUB_TXT`.
-- Reporte: nº de tramos, longitud total, longitud por diámetro y caudal en la
-  fuente. Usa **DATAEXTRACTION** filtrando por capa para la lista de materiales
-  (metros por diámetro).
+- Polilíneas en capas `RIEGO_TUB_<diámetro>` (color por diámetro).
+- Rótulos opcionales en `RIEGO_TUB_TXT`; marcador de fuente en `RIEGO_FUENTE`.
+- Reporte: disposición, longitud total y por diámetro, caudal en la fuente y
+  verificación del criterio de presión. Usa **DATAEXTRACTION** por capa para la
+  lista de materiales (metros por diámetro).
 
-## Detalles técnicos
+## Notas técnicas
 
-- **Detección de aspersores:** bloques cuyo nombre contiene `ASPERSOR`; lee los
-  atributos `CAUDAL`, `NUM` y `ZONA`. Si no encuentra ninguno, permite
-  **selección manual** (bloques, círculos o puntos).
-- **Caudal por tramo:** acumulación de subárbol enraizado en la fuente.
-- **Complejidad:** Prim O(n²), apto para cientos/miles de aspersores.
+- **Detección de aspersores**: bloque cuyo nombre contiene `ASPERSOR`, **o** capa
+  `RIEGO_ASPERSOR`, **o** con atributo `NUM`/`CAUDAL`. Fallback: selección manual
+  o por círculos.
+- **Filtro por zona**: solo se ofrece si hay varias `ZONA` distintas.
+- El anillo usa un modelo de reparto de caudal equilibrado (dos vías) — es una
+  aproximación de diseño, no un cálculo iterativo de redes malladas (Hardy-Cross).
+- No considera desnivel (terreno plano). Puede añadirse leyendo la Z de los
+  bloques si el dibujo es 3D.
