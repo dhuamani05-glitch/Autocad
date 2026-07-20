@@ -100,9 +100,42 @@ Public Sub TrazadoTuberias()
     FiltrarPorZona
     If nP < 1 Then Exit Sub
 
-    If MsgBox("Se detectaron " & nP & " aspersores para conectar." & vbCrLf & vbCrLf & _
-              "Se pedira el punto de FUENTE (cabezal/valvula). Continuar?", _
-              vbOKCancel + vbInformation, "Trazado de tuberias") = vbCancel Then Exit Sub
+    ' --- DIAGNOSTICO DE CAUDAL (verificacion de la suma) ---
+    '     La suma en las tuberias nunca puede superar la suma de los caudales
+    '     individuales. Aqui se muestran esos individuales para verificar.
+    Dim qi As Long, qMin As Double, qMax As Double, qSum As Double, qCero As Long
+    qMin = 1E+30: qMax = -1E+30: qSum = 0#: qCero = 0
+    For qi = 0 To nP - 1
+        If pQ(qi) < qMin Then qMin = pQ(qi)
+        If pQ(qi) > qMax Then qMax = pQ(qi)
+        qSum = qSum + pQ(qi)
+        If pQ(qi) <= 0# Then qCero = qCero + 1
+    Next
+
+    If MsgBox("Se detectaron " & nP & " aspersores." & vbCrLf & vbCrLf & _
+              "CAUDAL leido del atributo CAUDAL de cada bloque:" & vbCrLf & _
+              "   minimo:   " & Format(qMin, "0.00") & " l/min" & vbCrLf & _
+              "   maximo:   " & Format(qMax, "0.00") & " l/min" & vbCrLf & _
+              "   promedio: " & Format(qSum / nP, "0.00") & " l/min" & vbCrLf & _
+              "   SUMA TOTAL: " & Format(qSum, "0.0") & " l/min" & vbCrLf & _
+              "   (sin caudal: " & qCero & " aspersores)" & vbCrLf & vbCrLf & _
+              "El caudal de cualquier tuberia sera como maximo esa SUMA TOTAL." & vbCrLf & _
+              "Si el maximo por aspersor ya es muy grande, el dato viene asi del" & vbCrLf & _
+              "atributo CAUDAL (revise el ANGULO del catalogo en modDisenoAspersion)." & vbCrLf & vbCrLf & _
+              "Continuar con el trazado?", _
+              vbOKCancel + vbInformation, "Diagnostico de caudal") = vbCancel Then Exit Sub
+
+    ' --- OPCION: caudal uniforme (corrige si el atributo trae valores malos) ---
+    Dim qOv As String
+    qOv = Trim$(InputBox( _
+        "Caudal por aspersor (l/min) a USAR en el diseno:" & vbCrLf & _
+        "  Enter = usar el del atributo CAUDAL de cada bloque" & vbCrLf & _
+        "  o escriba un valor UNIFORME para TODOS los aspersores.", _
+        "Caudal de diseno", ""))
+    If qOv <> "" And Val(qOv) > 0# Then
+        Dim qq As Long
+        For qq = 0 To nP - 1: pQ(qq) = Val(qOv): Next
+    End If
 
     '======================================================================
     ' 2) PUNTO DE FUENTE
