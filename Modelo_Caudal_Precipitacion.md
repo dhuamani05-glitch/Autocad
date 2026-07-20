@@ -30,25 +30,32 @@ Verificado (R‑VAN14, 3.1 bar, R=4.3, Q360=4.81):
 
 Para arcos NO tabulados (125°, 264°, 52°) se usa la misma proporción directa.
 
-## 2) Caudal vs ALCANCE  (Q ∝ R²)  ← lo que faltaba
+## 2) Caudal vs ALCANCE  (Q ∝ Rⁿ)  ← NO es universal
 
-Al **reducir el radio nominal** (por presión o por el tornillo de reducción), el
-caudal baja con el **cuadrado** del radio (porque la precipitación se mantiene):
+Al reducir el radio, el caudal baja con **Rⁿ**, pero el exponente **n depende de
+la familia** de boquilla (lo verifiqué contra R‑VAN, HE‑VAN y VAN):
+
+| familia | exponente n | por qué |
+|---------|:-----------:|---------|
+| **R‑VAN** | **≈ 2.0** | precipitación constante (matched) |
+| **HE‑VAN** | ≈ 0.7 – 1.15 | precipitación baja con la presión |
+| **VAN** (spray) | ≈ 0.76 – 0.84 | precipitación baja con la presión |
 
 ```
-Q(R) = Q_nom · (R / R_nom)²
+Q(R) = Q_nom · (R / R_nom)ⁿ
 ```
 
-Verificado tomando filas de distinto alcance del mismo modelo:
+**Por eso el n = 2 solo vale para R‑VAN.** Para HE‑VAN o VAN, calcule n con dos
+filas del catálogo de esa boquilla:
 
-| modelo | Q₂/Q₁ (tabla) | (R₂/R₁)² |
-|--------|--------------:|---------:|
-| R‑VAN14 | 1.320 | 1.322 |
-| R‑VAN18 | 1.278 | 1.260 |
-| R‑VAN24 | 1.591 | 1.584 |
+```
+n = ln(Q₂/Q₁) / ln(R₂/R₁)
+```
 
-Es decir, si un aspersor se reduce al 80 % de su alcance (f = 0.8), su caudal
-queda en **f² = 0.64 → 64 %** del nominal, no en 80 %.
+Ejemplo: si un R‑VAN se reduce al 80 % del alcance (f = 0.8), su caudal queda en
+**f² = 0.64 → 64 %**; pero un HE‑VAN (n≈0.75) quedaría en **0.8^0.75 = 85 %**.
+La forma robusta y válida para cualquier boquilla es **interpolar** el caudal
+entre dos filas (presión, radio, caudal) del catálogo — función `CaudalInterp`.
 
 ## 3) Fórmula general (arco + alcance combinados)
 
@@ -85,12 +92,23 @@ Para un aspersor de arco parcial la precipitación **local** en el sector regado
 es la misma que la del círculo completo (por eso la tabla repite 16/18 en todos
 los sectores): el arco reduce el caudal y el área regada en la misma proporción.
 
+## ¿Una fórmula por modelo, o una sola?
+
+- **Arco y precipitación (cuadro/triángulo): una sola, universal.** La misma
+  del R‑VAN encaja exacto con HE‑VAN y VAN (verificado). El factor
+  triángulo/cuadro = 2/√3 se cumple en todas.
+- **Radio → caudal: NO universal.** El exponente n cambia por familia. No se
+  inventa una fórmula por modelo: se guardan **dos filas (presión, radio,
+  caudal)** por boquilla en el catálogo y se **interpola** (`CaudalInterp`),
+  o se calcula n con `ExponenteRadio`. Así vale para R‑VAN, HE‑VAN, VAN y
+  cualquier tobera futura sin re‑derivar nada.
+
 ## Resumen operativo
 
-| Dato buscado | Fórmula |
-|---|---|
-| Caudal a otro arco | `Q = Q360·(arco/360)` |
-| Caudal a radio reducido | `Q = Q_nom·(R/R_nom)²` |
-| Caudal general | `Q = Q360_nom·(arco/360)·(R/R_nom)²` |
-| Precip. cuadro | `PR_c = 60·Q/S²` |
-| Precip. triángulo | `PR_t = 60·Q/(S²·√3/2) = 1.1547·PR_c` |
+| Dato buscado | Fórmula | Universal |
+|---|---|:---:|
+| Caudal a otro arco | `Q = Q360·(arco/360)` | ✅ |
+| Caudal a radio reducido | `Q = Q_nom·(R/R_nom)ⁿ`  (n por familia) | ❌ |
+| Exponente n | `n = ln(Q₂/Q₁)/ln(R₂/R₁)` (2 filas del catálogo) | ✅ método |
+| Precip. cuadro | `PR_c = 60·Q/S²` | ✅ |
+| Precip. triángulo | `PR_t = 1.1547·PR_c` | ✅ |

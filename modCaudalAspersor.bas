@@ -3,18 +3,24 @@ Option Explicit
 '==============================================================================
 ' MODELO DE CAUDAL Y PRECIPITACION PARA ASPERSORES (toberas MPR tipo R-VAN)
 '------------------------------------------------------------------------------
-' Relaciones derivadas y verificadas contra los cuadros R-VAN14/18/24:
+' Verificado contra R-VAN14/18/24, HE-VAN 8/10/12/15 y VAN 4/6/8/10/12.
 '
+' UNIVERSAL (misma formula para todas las boquillas):
 '   1) Caudal vs ARCO      :  Q = Q360 * (arco/360)
-'   2) Caudal vs ALCANCE   :  Q = Q_nom * (R/R_nom)^2      (precip. ajustada)
-'   3) General             :  Q = Q360nom * (arco/360) * (R/R_nom)^2
 '   4) Precipitacion cuadro:  PR_c = 60*Q / S^2            (S = separacion, m)
-'      Precipitacion triang:  PR_t = 60*Q / (S^2*sqrt3/2) = PR_c * 2/sqrt3
+'      Precipitacion triang:  PR_t = PR_c * 2/sqrt3  (~1.1547)
+'
+' NO universal (depende de la familia de boquilla):
+'   2) Caudal vs ALCANCE   :  Q = Q_nom * (R/R_nom)^n
+'      El exponente n NO es fijo:
+'        - R-VAN  : n ~ 2.0  (precipitacion constante / matched)
+'        - HE-VAN : n ~ 0.7 a 1.15
+'        - VAN     : n ~ 0.76 a 0.84
+'      Por eso NO se debe usar n=2 con HE-VAN ni VAN. Se calcula n de DOS
+'      filas del catalogo con ExponenteRadio(), o se pasa a CaudalAspersor.
 '
 ' Sirve para calcular el caudal de CUALQUIER arco (125, 264, 52 grados...) y de
-' cualquier alcance reducido, y su precipitacion en cuadro y triangulo, que las
-' tablas del fabricante solo dan para arcos fijos.
-'
+' cualquier alcance, y su precipitacion en cuadro y triangulo.
 ' Ver "Modelo_Caudal_Precipitacion.md" para la derivacion y la verificacion.
 '==============================================================================
 
@@ -27,15 +33,43 @@ Private Const SQRT3 As Double = 1.73205080756888   ' raiz de 3
 '   arcoDeg : angulo del sector a usar (grados, 1..360) - cualquier valor
 '   rUso    : alcance realmente usado (m); si = rNom no hay reduccion
 '------------------------------------------------------------------------------
+'   expRadio: exponente n de la ley Q ~ R^n. Por defecto 2 (R-VAN). Para
+'             HE-VAN / VAN calcule n con ExponenteRadio() y paselo aqui.
 Public Function CaudalAspersor(q360Nom As Double, rNom As Double, _
-                               arcoDeg As Double, rUso As Double) As Double
+                               arcoDeg As Double, rUso As Double, _
+                               Optional expRadio As Double = 2#) As Double
     If rNom <= 0# Or q360Nom <= 0# Then Exit Function
     Dim fArco As Double, fRad As Double
     fArco = arcoDeg / 360#
     If fArco < 0# Then fArco = 0#
     If fArco > 1# Then fArco = 1#
     fRad = rUso / rNom
-    CaudalAspersor = q360Nom * fArco * fRad * fRad
+    CaudalAspersor = q360Nom * fArco * (fRad ^ expRadio)
+End Function
+
+'------------------------------------------------------------------------------
+' EXPONENTE n de la ley Q ~ R^n, a partir de DOS filas del catalogo de la
+' MISMA boquilla (dos presiones): (r1,q1) y (r2,q2). Model-agnostic.
+'   R-VAN ~ 2.0 ; HE-VAN ~ 0.7-1.15 ; VAN ~ 0.76-0.84
+'------------------------------------------------------------------------------
+Public Function ExponenteRadio(r1 As Double, q1 As Double, _
+                               r2 As Double, q2 As Double) As Double
+    If r1 <= 0# Or r2 <= 0# Or q1 <= 0# Or q2 <= 0# Or r1 = r2 Then
+        ExponenteRadio = 2#            ' sin datos: por defecto matched (R-VAN)
+        Exit Function
+    End If
+    ExponenteRadio = Log(q2 / q1) / Log(r2 / r1)   ' Log = logaritmo natural
+End Function
+
+'------------------------------------------------------------------------------
+' CAUDAL por INTERPOLACION de dos filas del catalogo (lo mas exacto y valido
+' para CUALQUIER boquilla): ajusta la ley Q ~ R^n con (r1,q1),(r2,q2) y evalua
+' en rUso, luego aplica el arco.  q1,q2 son caudales a 360 grados.
+'------------------------------------------------------------------------------
+Public Function CaudalInterp(r1 As Double, q1 As Double, r2 As Double, q2 As Double, _
+                             arcoDeg As Double, rUso As Double) As Double
+    Dim n As Double: n = ExponenteRadio(r1, q1, r2, q2)
+    CaudalInterp = CaudalAspersor(q1, r1, arcoDeg, rUso, n)
 End Function
 
 '------------------------------------------------------------------------------
@@ -110,6 +144,11 @@ Public Sub VerificarModeloRVAN14()
         "  R=4.6 -> Q=" & Format(CaudalAspersor(q360, rNom, 360, 4.6), "0.00") & "  (tabla 5.49)" & vbCrLf & vbCrLf & _
         "Precipitacion (360, R=4.3, Q=4.81):" & vbCrLf & _
         "  cuadro:    " & Format(PrecipCuadro(4.81, 4.3), "0.0") & " mm/h  (tabla 16)" & vbCrLf & _
-        "  triangulo: " & Format(PrecipTriangulo(4.81, 4.3), "0.0") & " mm/h  (tabla 18)"
+        "  triangulo: " & Format(PrecipTriangulo(4.81, 4.3), "0.0") & " mm/h  (tabla 18)" & vbCrLf & vbCrLf & _
+        "EXPONENTE n (Q~R^n) por familia -- NO es universal:" & vbCrLf & _
+        "  R-VAN14 : n = " & Format(ExponenteRadio(4#, 4.16, 4.6, 5.49), "0.00") & "  (~2 matched)" & vbCrLf & _
+        "  HE-VAN8 : n = " & Format(ExponenteRadio(1.5, 3.14, 2.4, 4.43), "0.00") & vbCrLf & _
+        "  VAN10   : n = " & Format(ExponenteRadio(2.1, 7.3, 3.1, 9.8), "0.00") & vbCrLf & _
+        "  -> use ExponenteRadio() / CaudalInterp() para HE-VAN y VAN."
     MsgBox s, vbInformation, "Modelo de caudal y precipitacion"
 End Sub
