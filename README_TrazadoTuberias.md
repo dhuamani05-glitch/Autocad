@@ -6,14 +6,18 @@ y la dimensiona según las mejores prácticas de riego.
 
 ## Disposiciones (el usuario elige al ejecutar)
 
-1. **Anillo (looped main)** — recomendado para aspersores en perímetro. Cierra
-   el perímetro en un bucle alimentado desde la fuente; el caudal se reparte en
-   dos ramas que se encuentran en el *punto neutro* → menor fricción y **presión
-   más uniforme**. El tramo de cierre transporta ~0.
-2. **Principal + laterales** — troncal a lo largo del eje dominante (los dos
-   aspersores más alejados) con **laterales perpendiculares** a cada aspersor.
-   Pocos emisores en serie por lateral.
+1. **Troncal única (recomendada)** — una sola línea principal continua recorre
+   los aspersores en secuencia (**mínima ramificación → ideal para zanja de
+   retroexcavadora**). El cabezal **no** entra de frente a un aspersor: se conecta
+   con una **tee en el punto más cercano** de la troncal, y el caudal se reparte
+   hacia los dos lados (favorece el 20%).
+2. **Anillo (looped main)** — perímetro en bucle; caudal repartido en dos ramas
+   → presión muy uniforme.
 3. **Árbol (MST, Prim)** — mínima longitud total de tubería (menor material).
+4. **Principal + laterales** (opcional) — troncal con laterales perpendiculares.
+
+**Diámetro mínimo de lateral = 25 mm** (no se usan 16 ni 20 mm). Catálogo:
+25, 32, 40, 50, 63, 75, 90, 110, 125, 160 mm.
 
 ## Criterio hidráulico (regla del 20%) con desnivel
 

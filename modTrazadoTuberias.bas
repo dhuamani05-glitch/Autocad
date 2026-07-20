@@ -188,8 +188,8 @@ Public Sub TrazadoTuberias()
     '======================================================================
     Dim mLong(1 To 3) As Double, mVar(1 To 3) As Double, mCost(1 To 3) As Double
     Dim mCump(1 To 3) As Boolean, mName(1 To 3) As String
-    mName(1) = "Anillo (looped main)"
-    mName(2) = "Principal + laterales"
+    mName(1) = "Troncal unica (tee en cabezal)"
+    mName(2) = "Anillo (looped main)"
     mName(3) = "Arbol (MST)"
 
     Dim tp As Long, vM As Double, cmpl As Boolean, lt As Double, ct As Double
@@ -230,21 +230,32 @@ Public Sub TrazadoTuberias()
     Next
     cmp = cmp & String(56, "-") & vbCrLf & _
           "Recomendada = menor costo entre las que cumplen." & vbCrLf & _
+          "La TRONCAL UNICA es la mas practica para excavadora (una zanja," & vbCrLf & _
+          "minima ramificacion, cabezal con tee al costado)." & vbCrLf & _
           IIf(dzVar > pctVar / 100# * pNom, _
               "AVISO: el desnivel por si solo supera el " & Format(pctVar, "0") & _
               "%. Ninguna tuberia lo corrige: sectorice o regule presion." & vbCrLf, "")
     MsgBox cmp, vbInformation, "Comparativo de disposiciones"
 
     Dim elec As String
-    elec = Trim$(InputBox(cmp & vbCrLf & "Cual DIBUJAR?  1 / 2 / 3   (Enter = recomendada " & rec & ")", _
-                          "Elegir disposicion", CStr(rec)))
+    elec = Trim$(InputBox(cmp & vbCrLf & _
+           "Cual DIBUJAR?  1 / 2 / 3   (4 = principal+laterales)" & vbCrLf & _
+           "(Enter = recomendada " & rec & ")", _
+           "Elegir disposicion", CStr(rec)))
     If elec = "" Then elec = CStr(rec)
     Dim chosen As Long: chosen = Val(elec)
-    If chosen < 1 Or chosen > 3 Then chosen = rec
+    If chosen < 1 Or chosen > 4 Then chosen = rec
 
     '======================================================================
     ' 5) CONSTRUIR + DIMENSIONAR + DIBUJAR LA ELEGIDA
     '======================================================================
+    Dim nombreElegido As String
+    If chosen >= 1 And chosen <= 3 Then
+        nombreElegido = mName(chosen)
+    Else
+        nombreElegido = "Principal + laterales"
+    End If
+
     Construir chosen
     If gNN < 2 Then Exit Sub
     DimensionarRed vMax, pNom, pctVar, hwC, vM, cmpl, lt, ct
@@ -288,7 +299,7 @@ Public Sub TrazadoTuberias()
 
     Dim rep As String
     rep = "TRAZADO DE TUBERIAS COMPLETADO" & vbCrLf & String(46, "-") & vbCrLf & _
-          "Disposicion:            " & mName(chosen) & vbCrLf & _
+          "Disposicion:            " & nombreElegido & vbCrLf & _
           "Aspersores conectados:  " & (nP - 1) & vbCrLf & _
           "Tramos de tuberia:      " & (gNN - 1 + gNEx) & vbCrLf & _
           "Longitud TOTAL de red:  " & Format(longTot, "0.00") & " m" & vbCrLf & _
@@ -428,10 +439,101 @@ End Function
 '==============================================================================
 Private Sub Construir(topo As Long)
     Select Case topo
-        Case 2: ConstruirPrincipalLaterales
+        Case 2: ConstruirAnillo
         Case 3: ConstruirArbolMST
-        Case Else: ConstruirAnillo
+        Case 4: ConstruirPrincipalLaterales
+        Case Else: ConstruirTroncalUnica
     End Select
+End Sub
+
+'--- 1) TRONCAL UNICA (linea principal continua + tee del cabezal) -----------
+' Una sola troncal recorre los aspersores en secuencia (minima ramificacion,
+' ideal para zanja de retroexcavadora). El cabezal NO entra de frente a un
+' aspersor: se conecta con una TEE en el punto MAS CERCANO de la troncal, y el
+' caudal se reparte hacia los dos lados (favorece el criterio del 20%).
+Private Sub ConstruirTroncalUnica()
+    Dim ns As Long: ns = nP - 1
+    If ns < 2 Then ConstruirArbolMST: Exit Sub
+
+    ' centroide para arrancar la cadena en un extremo (aspersor mas lejano)
+    Dim cx As Double, cy As Double, i As Long, j As Long, d As Double
+    cx = 0#: cy = 0#
+    For i = 1 To nP - 1: cx = cx + pX(i): cy = cy + pY(i): Next
+    cx = cx / ns: cy = cy / ns
+    Dim start As Long, dref As Double
+    start = 1: dref = -1#
+    For i = 1 To nP - 1
+        d = (pX(i) - cx) ^ 2 + (pY(i) - cy) ^ 2
+        If d > dref Then dref = d: start = i
+    Next
+
+    ' cadena abierta por vecino mas cercano
+    Dim chain() As Long: ReDim chain(ns - 1)
+    Dim used() As Boolean: ReDim used(nP - 1)
+    chain(0) = start: used(start) = True
+    Dim cur As Long: cur = start
+    Dim nc As Long: nc = 1
+    Do While nc < ns
+        Dim nxt As Long: nxt = -1: dref = 1E+30
+        For j = 1 To nP - 1
+            If Not used(j) Then
+                d = (pX(cur) - pX(j)) ^ 2 + (pY(cur) - pY(j)) ^ 2
+                If d < dref Then dref = d: nxt = j
+            End If
+        Next
+        chain(nc) = nxt: used(nxt) = True: cur = nxt: nc = nc + 1
+    Loop
+
+    ' tee del cabezal: punto mas cercano de la troncal (proyeccion del cabezal
+    ' sobre cada segmento de la cadena)
+    Dim segBest As Long, dBest As Double, fx As Double, fy As Double
+    Dim teeX As Double, teeY As Double, k As Long
+    segBest = -1: dBest = 1E+30
+    For k = 0 To ns - 2
+        ProyeccionEnSegmento pX(0), pY(0), pX(chain(k)), pY(chain(k)), _
+                             pX(chain(k + 1)), pY(chain(k + 1)), fx, fy
+        d = (pX(0) - fx) ^ 2 + (pY(0) - fy) ^ 2
+        If d < dBest Then dBest = d: segBest = k: teeX = fx: teeY = fy
+    Next
+    If segBest = -1 Then segBest = 0: teeX = pX(chain(0)): teeY = pY(chain(0))
+
+    ' nodos: 0..nP-1 (cabezal + aspersores) + 1 tee (indice nP)
+    Dim tee As Long: tee = nP
+    gNN = nP + 1
+    ReDim gNX(gNN - 1): ReDim gNY(gNN - 1): ReDim gDem(gNN - 1)
+    ReDim gPar(gNN - 1): ReDim gOrd(gNN - 1)
+    For i = 0 To nP - 1
+        gNX(i) = pX(i): gNY(i) = pY(i): gDem(i) = pQ(i)
+    Next
+    gNX(tee) = teeX: gNY(tee) = teeY: gDem(tee) = 0#
+
+    gPar(0) = -1
+    gPar(tee) = 0                                  ' cabezal -> tee
+    gPar(chain(segBest)) = tee                     ' rama hacia un lado
+    For i = segBest - 1 To 0 Step -1
+        gPar(chain(i)) = chain(i + 1)
+    Next
+    gPar(chain(segBest + 1)) = tee                 ' rama hacia el otro lado
+    For i = segBest + 2 To ns - 1
+        gPar(chain(i)) = chain(i - 1)
+    Next
+
+    gNEx = 0
+    OrdenarArbol
+End Sub
+
+'--- proyeccion de un punto sobre un segmento (pie de perpendicular, acotado) -
+Private Sub ProyeccionEnSegmento(px As Double, py As Double, _
+                                 ax As Double, ay As Double, bx As Double, by As Double, _
+                                 ByRef fx As Double, ByRef fy As Double)
+    Dim dx As Double, dy As Double, len2 As Double, t As Double
+    dx = bx - ax: dy = by - ay
+    len2 = dx * dx + dy * dy
+    If len2 < 0.000000000001 Then fx = ax: fy = ay: Exit Sub
+    t = ((px - ax) * dx + (py - ay) * dy) / len2
+    If t < 0# Then t = 0#
+    If t > 1# Then t = 1#
+    fx = ax + t * dx: fy = ay + t * dy
 End Sub
 
 '--- 3) ARBOL DE EXPANSION MINIMA (Prim) -------------------------------------
@@ -663,9 +765,10 @@ Private Function ElegirDiametro(caudalLmin As Double, vMax As Double) As Long
 End Function
 
 Private Sub CargarCatalogoDiametros()
+    ' Diametro MINIMO de lateral en aspersion = 25 mm (no se usan 16 ni 20).
     Dim dd As Variant, cc As Variant, i As Long
-    dd = Array(16#, 20#, 25#, 32#, 40#, 50#, 63#, 75#, 90#, 110#)
-    cc = Array(5, 3, 4, 1, 6, 2, 30, 8, 40, 200)
+    dd = Array(25#, 32#, 40#, 50#, 63#, 75#, 90#, 110#, 125#, 160#)
+    cc = Array(4, 3, 2, 6, 5, 30, 8, 40, 200, 1)
     nDiam = UBound(dd) + 1
     ReDim gDiam(nDiam - 1): ReDim gDiamColor(nDiam - 1)
     For i = 0 To nDiam - 1
