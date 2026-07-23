@@ -311,8 +311,18 @@ Public Sub TrazadoTuberias()
                   Format(longD(i), "0.00") & " m" & vbCrLf
         End If
     Next
+    Dim qRamaA As Double, qRamaB As Double
+    RamasPrincipales qRamaA, qRamaB
+    Dim txtReparto As String
+    If qRamaA > 0# Then
+        txtReparto = "Reparto en la derivacion:  " & Format(qRamaA, "0.0") & _
+                     " l/min  |  " & Format(qRamaB, "0.0") & " l/min" & _
+                     "  (dif " & Format(100# * Abs(qRamaA - qRamaB) / (qRamaA + qRamaB), "0.0") & "%)" & vbCrLf
+    End If
+
     rep = rep & vbCrLf & _
-          "Caudal total en la fuente: " & Format(gAcc(0), "0.0") & " l/min" & vbCrLf & vbCrLf & _
+          "Caudal total en la fuente: " & Format(gAcc(0), "0.0") & " l/min" & vbCrLf & _
+          txtReparto & vbCrLf & _
           "CRITERIO DE PRESION (friccion + desnivel):" & vbCrLf & _
           "  Presion nominal:      " & Format(pNom, "0.0") & " m.c.a." & vbCrLf & _
           "  Variacion admisible:  " & Format(pctVar, "0") & " % = " & Format(admis, "0.00") & " m" & vbCrLf & _
@@ -413,6 +423,31 @@ Private Sub DimensionarRed(vMax As Double, pNom As Double, pctVar As Double, hwC
     Next
 End Sub
 
+'--- Reparto de caudal en la primera derivacion (tee del cabezal / punto de
+'    alimentacion): devuelve los dos caudales de rama mayores. Sirve para ver
+'    el equilibrio izquierda/derecha (consigna tipo T).
+Private Sub RamasPrincipales(ByRef qA As Double, ByRef qB As Double)
+    qA = 0#: qB = 0#
+    Dim k As Long, nd As Long, j As Long, c As Long
+    Dim b1 As Double, b2 As Double, f As Double
+    For k = 0 To gNN - 1
+        nd = gOrd(k)
+        b1 = -1#: b2 = -1#: c = 0
+        For j = 1 To gNN - 1
+            If gPar(j) = nd Then
+                c = c + 1
+                f = gAcc(j)
+                If f > b1 Then
+                    b2 = b1: b1 = f
+                ElseIf f > b2 Then
+                    b2 = f
+                End If
+            End If
+        Next
+        If c >= 2 Then qA = b1: qB = b2: Exit Sub
+    Next
+End Sub
+
 '--- Recomendada: menor costo entre las que cumplen; si ninguna, menor variacion
 Private Function Recomendar(cumple() As Boolean, costo() As Double, varM() As Double) As Long
     Dim tp As Long, best As Long: best = -1
@@ -484,18 +519,30 @@ Private Sub ConstruirTroncalUnica()
         chain(nc) = nxt: used(nxt) = True: cur = nxt: nc = nc + 1
     Loop
 
-    ' tee del cabezal: punto mas cercano de la troncal (proyeccion del cabezal
-    ' sobre cada segmento de la cadena)
-    Dim segBest As Long, dBest As Double, fx As Double, fy As Double
-    Dim teeX As Double, teeY As Double, k As Long
-    segBest = -1: dBest = 1E+30
+    ' PUNTO DE DIVISION (consigna tipo T): se elige el corte que EQUILIBRA el
+    ' caudal de las dos ramas. Izq = chain(0..k), Der = chain(k+1..ns-1); se
+    ' busca k tal que el caudal izquierdo sea lo mas parecido al derecho.
+    ' Si no hay caudal (todo 0), se equilibra por numero de aspersores.
+    Dim k As Long
+    Dim dTot As Double: dTot = 0#
+    For k = 0 To ns - 1: dTot = dTot + pQ(chain(k)): Next
+    Dim porConteo As Boolean: porConteo = (dTot <= 0#)
+    Dim totBal As Double: totBal = IIf(porConteo, CDbl(ns), dTot)
+
+    Dim segBest As Long, mejorDif As Double, cumBal As Double, dif As Double
+    segBest = 0: mejorDif = 1E+30: cumBal = 0#
     For k = 0 To ns - 2
-        ProyeccionEnSegmento pX(0), pY(0), pX(chain(k)), pY(chain(k)), _
-                             pX(chain(k + 1)), pY(chain(k + 1)), fx, fy
-        d = (pX(0) - fx) ^ 2 + (pY(0) - fy) ^ 2
-        If d < dBest Then dBest = d: segBest = k: teeX = fx: teeY = fy
+        If porConteo Then cumBal = cumBal + 1# Else cumBal = cumBal + pQ(chain(k))
+        dif = Abs(2# * cumBal - totBal)          ' |Q_izq - Q_der|
+        If dif < mejorDif Then mejorDif = dif: segBest = k
     Next
-    If segBest = -1 Then segBest = 0: teeX = pX(chain(0)): teeY = pY(chain(0))
+
+    ' La tee se coloca sobre el segmento [chain(segBest), chain(segBest+1)] en el
+    ' punto mas cercano al cabezal (header corto), sin alterar el reparto.
+    Dim fx As Double, fy As Double, teeX As Double, teeY As Double
+    ProyeccionEnSegmento pX(0), pY(0), pX(chain(segBest)), pY(chain(segBest)), _
+                         pX(chain(segBest + 1)), pY(chain(segBest + 1)), fx, fy
+    teeX = fx: teeY = fy
 
     ' nodos: 0..nP-1 (cabezal + aspersores) + 1 tee (indice nP)
     Dim tee As Long: tee = nP
@@ -933,38 +980,49 @@ End Function
 ' FILTRO POR ZONA
 '==============================================================================
 Private Sub FiltrarPorZona()
-    Dim zonas(63) As String, nz As Long
-    Dim i As Long, j As Long, existe As Boolean
+    ' zonas distintas con su conteo de aspersores (vacio -> "(sin zona)")
+    Dim zonas(63) As String, cnt(63) As Long, nz As Long
+    Dim i As Long, j As Long, existe As Boolean, zz As String
     nz = 0
     For i = 0 To nP - 1
-        If pZona(i) <> "" Then
-            existe = False
-            For j = 0 To nz - 1
-                If zonas(j) = pZona(i) Then existe = True
-            Next
-            If Not existe And nz < 64 Then zonas(nz) = pZona(i): nz = nz + 1
-        End If
+        zz = pZona(i)
+        If zz = "" Then zz = "(sin zona)"
+        existe = False
+        For j = 0 To nz - 1
+            If zonas(j) = zz Then cnt(j) = cnt(j) + 1: existe = True: Exit For
+        Next
+        If Not existe And nz < 64 Then zonas(nz) = zz: cnt(nz) = 1: nz = nz + 1
     Next
-    If nz <= 1 Then Exit Sub
+    If nz <= 1 Then Exit Sub          ' una sola zona: no hay que elegir
 
+    ' menu NUMERADO (elegir por numero, no escribir el nombre)
     Dim lista As String
-    For i = 0 To nz - 1: lista = lista & "   " & zonas(i) & vbCrLf: Next
+    For i = 0 To nz - 1
+        lista = lista & "   " & (i + 1) & " = " & zonas(i) & _
+                "   (" & cnt(i) & " aspersores)" & vbCrLf
+    Next
     Dim sel As String
-    sel = UCase$(Trim$(InputBox( _
-        "Hay aspersores de varias ZONAS / VALVULAS:" & vbCrLf & lista & vbCrLf & _
-        "Escriba la ZONA a trazar, o deje VACIO para TODAS.", "Filtro por zona", "")))
-    If sel = "" Then Exit Sub
+    sel = Trim$(InputBox( _
+        "Hay " & nz & " ZONAS / VALVULAS. En cual desea trazar?" & vbCrLf & vbCrLf & _
+        lista & "   0 = TODAS juntas" & vbCrLf & vbCrLf & _
+        "Escriba el NUMERO de la zona:", "Seleccion de zona", "1"))
+    If sel = "" Then Exit Sub          ' cancelar: deja el conjunto como esta
+    Dim opt As Long: opt = Val(sel)
+    If opt <= 0 Or opt > nz Then Exit Sub   ' 0 o invalido = TODAS
 
+    ' compactar dejando SOLO los aspersores de la zona elegida
+    Dim zsel As String: zsel = zonas(opt - 1)
     Dim k As Long: k = 0
     For i = 0 To nP - 1
-        If pZona(i) = sel Then
+        zz = pZona(i)
+        If zz = "" Then zz = "(sin zona)"
+        If zz = zsel Then
             pX(k) = pX(i): pY(k) = pY(i): pZ(k) = pZ(i): pQ(k) = pQ(i)
             pNum(k) = pNum(i): pZona(k) = pZona(i)
             k = k + 1
         End If
     Next
     nP = k
-    If nP = 0 Then MsgBox "Ningun aspersor tiene la zona '" & sel & "'.", vbExclamation
 End Sub
 
 '==============================================================================
